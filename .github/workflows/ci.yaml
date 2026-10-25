@@ -63,7 +63,7 @@ jobs:
           cache: true
 
       - name: Run unit tests
-        run: make test
+        run: make test-unit
 
   tidy:
     name: Go modules tidy

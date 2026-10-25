@@ -46,8 +46,8 @@ run: ## Run the controller against the current kubeconfig.
 
 ##@ Testing
 
-.PHONY: test
-test: ## Run unit tests.
+.PHONY: test-unit
+test-unit: ## Run unit tests.
 	go test -race -coverprofile=coverage.out ./...
 
 .PHONY: test-integration
