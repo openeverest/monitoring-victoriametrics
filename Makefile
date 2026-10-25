@@ -16,14 +16,10 @@ RELEASE_NAMESPACE ?= openeverest-system
 
 GOLANGCI_LINT_VERSION ?= v2.14.0
 
-# Branch of openeverest/openeverest whose CRDs the integration tests install.
-# Tracks the core branch go.mod is pinned to; switch to main once the
-# monitoring API is merged there.
-OPENEVEREST_BRANCH ?= monitoring/01-api
 # VictoriaMetrics Operator release whose CRDs the integration tests install.
 VM_OPERATOR_VERSION ?= v0.75.1
 
-# k3d cluster name (must match dev/k3d_config.yaml metadata.name)
+# k3d cluster for the integration tests (dev/k3d_config.yaml).
 K3D_CLUSTER_NAME ?= monitoring-victoriametrics-test
 
 .PHONY: help
@@ -83,26 +79,22 @@ helm-template: ## Render the chart.
 
 .PHONY: k3d-cluster-up
 k3d-cluster-up: ## Create the k3d cluster for the integration tests.
-	k3d cluster create --config ./dev/k3d_config.yaml
+	k3d cluster create $(K3D_CLUSTER_NAME) --config ./dev/k3d_config.yaml
 
 .PHONY: k3d-cluster-down
 k3d-cluster-down: ## Delete the k3d cluster.
-	k3d cluster delete --config ./dev/k3d_config.yaml
+	k3d cluster delete $(K3D_CLUSTER_NAME)
 
 .PHONY: load-image
 load-image: ## Import the controller image (IMG) into the k3d cluster.
 	k3d image import $(IMG) -c $(K3D_CLUSTER_NAME)
 
 .PHONY: install-crds
-install-crds: ## Install the OpenEverest and VictoriaMetrics Operator CRDs the controller needs.
-	kubectl apply -f https://raw.githubusercontent.com/openeverest/openeverest/$(OPENEVEREST_BRANCH)/config/crd/bases/core.openeverest.io_providers.yaml
-	kubectl apply -f https://raw.githubusercontent.com/openeverest/openeverest/$(OPENEVEREST_BRANCH)/config/crd/bases/core.openeverest.io_instances.yaml
-	kubectl apply -f https://raw.githubusercontent.com/openeverest/openeverest/$(OPENEVEREST_BRANCH)/config/crd/bases/monitoring.openeverest.io_monitoringclasses.yaml
-	kubectl apply -f https://raw.githubusercontent.com/openeverest/openeverest/$(OPENEVEREST_BRANCH)/config/crd/bases/monitoring.openeverest.io_monitoringdestinations.yaml
-	kubectl apply -f https://raw.githubusercontent.com/openeverest/openeverest/$(OPENEVEREST_BRANCH)/config/crd/bases/monitoring.openeverest.io_monitoringbindings.yaml
+install-crds: ## Install the CRDs of the OpenEverest version in go.mod and of the VictoriaMetrics Operator.
+	go mod download github.com/openeverest/openeverest/v2
+	kubectl apply --server-side -f "$$(go list -m -f '{{.Dir}}' github.com/openeverest/openeverest/v2)/config/crd/bases"
 	kubectl apply --server-side -f https://raw.githubusercontent.com/VictoriaMetrics/operator/$(VM_OPERATOR_VERSION)/config/crd/overlay/crd.descriptionless.yaml
-	kubectl wait --for=condition=Established --timeout=60s \
-		crd/instances.core.openeverest.io crd/monitoringbindings.monitoring.openeverest.io crd/vmpodscrapes.operator.victoriametrics.com
+	kubectl wait --for=condition=Established --timeout=60s crd --all
 
 .PHONY: deploy-ci
 deploy-ci: ## Install the chart with the image imported into k3d (IMG).

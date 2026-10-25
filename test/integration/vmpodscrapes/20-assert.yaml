@@ -29,6 +29,7 @@ spec:
         target:
           - 127.0.0.1:3306
       (basicAuth == null): true
+      (tlsConfig == null): true
       (relabelConfigs[?targetLabel == 'openeverest_instance'] | [0].replacement): vm-it
       (relabelConfigs[?targetLabel == 'openeverest_namespace'] | [0].replacement): ($namespace)
       (relabelConfigs[?targetLabel == 'openeverest_provider'] | [0].replacement): vm-it
@@ -63,8 +64,15 @@ spec:
   podMetricsEndpoints:
     - port: stats
       path: /metrics
-      scheme: http
+      scheme: https
       interval: 30s
+      tlsConfig:
+        ca:
+          secret:
+            name: vm-it-tls
+            key: ca.crt
+        serverName: vm-it-proxy
+        (insecureSkipVerify == null): true
       basicAuth:
         username:
           name: vm-it-monitoring-metrics
@@ -82,6 +90,11 @@ apiVersion: monitoring.openeverest.io/v1alpha1
 kind: MonitoringBinding
 metadata:
   name: vm-it-vm-ab1f7bf1
+  ownerReferences:
+    - apiVersion: core.openeverest.io/v1alpha1
+      kind: Instance
+      name: vm-it
+      controller: true
 status:
   (conditions[?type == 'Accepted'] | [0].status): "True"
   (conditions[?type == 'Configured'] | [0].status): "True"

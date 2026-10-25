@@ -245,11 +245,11 @@ make run          # run the controller against the current kubeconfig
 ### Integration tests
 
 The chainsaw suite under [test/integration/](test/integration/) runs in a k3d cluster that holds
-only CRDs: the OpenEverest core and monitoring CRDs from `OPENEVEREST_BRANCH`, and the
+only CRDs: the OpenEverest CRDs of the core version [go.mod](go.mod) pins, and the
 VictoriaMetrics Operator CRDs of `VM_OPERATOR_VERSION`. No OpenEverest controller or provider
-runs; the test publishes an Instance's monitoring sources and accepts the binding itself, then
-asserts the generated `VMPodScrape`s, the binding and destination conditions, pruning, and
-garbage collection.
+runs; the test publishes an Instance's monitoring sources and creates and accepts the
+Instance-owned binding itself, then asserts the generated `VMPodScrape`s, the binding and
+destination conditions, pruning, and garbage collection.
 
 ```bash
 make k3d-cluster-up

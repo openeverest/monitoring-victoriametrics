@@ -36,12 +36,16 @@ jobs:
           install-k3d: 'true'
           install-chainsaw: 'true'
 
+      # install-crds takes the OpenEverest CRDs from the core module go.mod pins.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
       - name: Create k3d cluster
-        run: |
-          sudo modprobe br_netfilter
-          make k3d-cluster-up
+        run: make k3d-cluster-up
 
       - name: Build controller image
         run: make docker-build

@@ -10,8 +10,8 @@ spec:
     Instance publishes metrics for; a component that stops publishing loses
     its VMPodScrape and deleting the binding garbage-collects the rest. Only
     CRDs are installed: the test publishes the Instance's monitoring sources
-    the way provider-runtime would and creates and accepts the binding the way
-    core would.
+    the way provider-runtime would and creates the Instance-owned binding and
+    accepts it the way core would.
   catch:
     - script:
         content: kubectl -n $NAMESPACE get instance,monitoringdestination,monitoringbinding,vmpodscrape -o yaml
@@ -27,7 +27,7 @@ spec:
         - assert:
             file: 00-assert.yaml
 
-    # Stand in for provider-runtime: a multi-target engine exporter and a
+    # Stand in for provider-runtime: a multi-target engine exporter and a TLS
     # proxy endpoint behind the "metrics" credential profile.
     - name: instance-publishes-sources
       try:
@@ -45,8 +45,9 @@ spec:
                   {"component": "engine", "kind": "mysql", "port": 9104, "path": "/probe", "scheme": "http",
                    "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "engine"},
                    "params": {"target": ["127.0.0.1:3306"]}},
-                  {"component": "proxy", "kind": "haproxy", "port": "stats", "path": "/metrics", "scheme": "http",
+                  {"component": "proxy", "kind": "haproxy", "port": "stats", "path": "/metrics", "scheme": "https",
                    "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "proxy"},
+                   "tls": {"ca": {"name": "vm-it-tls", "key": "ca.crt"}, "serverName": "vm-it-proxy"},
                    "auth": {"credentialProfile": "metrics"}}
                 ]}}}}
               EOF
@@ -54,9 +55,12 @@ spec:
 
     - name: binding-accepted
       try:
-        - apply:
-            file: 20-binding.yaml
-        # Stand in for core's binding controller.
+        # Stand in for core's binding controller: the Instance owns the
+        # binding, which is how Instance changes reach it.
+        - script:
+            content: |
+              INSTANCE_UID=$(kubectl -n $NAMESPACE get instance/vm-it -o jsonpath='{.metadata.uid}')
+              sed "s/__INSTANCE_UID__/$INSTANCE_UID/" 20-binding.yaml | kubectl -n $NAMESPACE apply -f -
         - script:
             content: |
               GENERATION=$(kubectl -n $NAMESPACE get monitoringbinding/vm-it-vm-ab1f7bf1 -o jsonpath='{.metadata.generation}')
@@ -67,6 +71,7 @@ spec:
 
     - name: component-stops-publishing
       try:
+        # Reaches the binding through the Instance watch.
         - script:
             content: |
               kubectl -n $NAMESPACE patch instance/vm-it --subresource status --type merge --patch '{"status": {"monitoring": {"sources": {"metrics": [
