@@ -1,0 +1,18 @@
+# The binding core materialises for the Instance's "vm" entry.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
+metadata:
+  name: vm-it-vm-ab1f7bf1
+  labels:
+    openeverest.io/instance: vm-it
+    monitoring.openeverest.io/entry: vm
+    monitoring.openeverest.io/destination: vm-it
+    monitoring.openeverest.io/class: victoriametrics
+spec:
+  instanceRef:
+    name: vm-it
+  destinationRef:
+    name: vm-it
+  classRef:
+    name: victoriametrics
+  executionMode: ExtensionManaged

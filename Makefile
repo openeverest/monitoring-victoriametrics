@@ -17,7 +17,8 @@ RELEASE_NAMESPACE ?= openeverest-system
 GOLANGCI_LINT_VERSION ?= v2.14.0
 
 # Branch of openeverest/openeverest whose CRDs the integration tests install.
-# Tracks the core branch go.mod is pinned to.
+# Tracks the core branch go.mod is pinned to; switch to main once the
+# monitoring API is merged there.
 OPENEVEREST_BRANCH ?= monitoring/01-api
 # VictoriaMetrics Operator release whose CRDs the integration tests install.
 VM_OPERATOR_VERSION ?= v0.75.1

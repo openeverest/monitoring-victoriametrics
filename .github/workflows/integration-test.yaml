@@ -1,0 +1,67 @@
+---
+# Reusable workflow: run one chainsaw integration suite inside a k3d cluster
+# holding only the CRDs the controller needs. Called by ci.yaml.
+name: Integration test
+
+on:
+  workflow_call:
+    inputs:
+      make_target:
+        description: 'Make target for the chainsaw suite (e.g. test-integration)'
+        type: string
+        required: true
+      suite:
+        description: 'Human-readable suite name used for artifact naming'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  IMG: monitoring-victoriametrics:ci
+
+jobs:
+  run:
+    name: ${{ inputs.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Kubernetes tooling
+        uses: ./.github/actions/setup-k8s-tools
+        with:
+          install-k3d: 'true'
+          install-chainsaw: 'true'
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Create k3d cluster
+        run: |
+          sudo modprobe br_netfilter
+          make k3d-cluster-up
+
+      - name: Build controller image
+        run: make docker-build
+
+      - name: Import image into k3d
+        run: make load-image
+
+      - name: Install CRDs
+        run: make install-crds
+
+      - name: Deploy controller
+        run: make deploy-ci
+
+      - name: Run ${{ inputs.make_target }}
+        run: make ${{ inputs.make_target }}
+
+      - name: Upload chainsaw report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chainsaw-${{ inputs.suite }}-${{ github.run_id }}
+          path: /tmp/chainsaw-report*.xml
+          retention-days: 7

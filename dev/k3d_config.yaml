@@ -1,0 +1,18 @@
+---
+# See more details at https://k3d.io/v5.3.0/usage/configfile/
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: monitoring-victoriametrics-test
+servers: 1
+agents: 0
+image: rancher/k3s:v1.33.2-k3s1
+options:
+  k3d:
+    wait: true
+    disableLoadbalancer: true
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik,metrics-server,servicelb"
+        nodeFilters:
+          - server:*

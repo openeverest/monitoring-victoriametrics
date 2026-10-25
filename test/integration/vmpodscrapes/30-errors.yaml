@@ -1,0 +1,5 @@
+# The proxy no longer publishes metrics, so its VMPodScrape is pruned.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: vm-it-vm-ab1f7bf1-proxy

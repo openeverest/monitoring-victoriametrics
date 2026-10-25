@@ -142,3 +142,11 @@ jobs:
             || { echo '::error::the controller is not told which class to serve'; exit 1; }
           grep -q 'controllerName: openeverest.io/monitoring-victoriametrics' /tmp/rendered.yaml \
             || { echo '::error::the MonitoringClass does not name the controller'; exit 1; }
+
+  test-integration:
+    name: Integration / VMPodScrapes
+    needs: [lint, build, test-unit, helm-lint]
+    uses: ./.github/workflows/integration-test.yaml
+    with:
+      make_target: test-integration
+      suite: vmpodscrapes
