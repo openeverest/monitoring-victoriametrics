@@ -37,6 +37,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --health-probe-bind-address=:8081
+            - --class-name={{ .Values.class.name }}
             - --zap-log-level={{ .Values.logLevel }}
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect

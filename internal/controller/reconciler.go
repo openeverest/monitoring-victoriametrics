@@ -19,18 +19,23 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -44,14 +49,17 @@ import (
 // ControllerName is matched against MonitoringClass.spec.controllerName.
 const ControllerName = "openeverest.io/monitoring-victoriametrics"
 
-// ClassName is the MonitoringClass this PoC controller claims. A real
-// extension would claim every class carrying ControllerName.
-const ClassName = "victoriametrics"
+const (
+	vmPodScrapeAPIVersion = "operator.victoriametrics.com/v1beta1"
+	vmPodScrapeKind       = "VMPodScrape"
+)
 
-var vmPodScrapeGVK = schema.GroupVersionKind{Group: "operator.victoriametrics.com", Version: "v1beta1", Kind: "VMPodScrape"}
+// applyRetryInterval paces retries of rejected writes, so bindings recover
+// once the VictoriaMetrics Operator CRDs are installed.
+const applyRetryInterval = time.Minute
 
-// destinationParameters is MonitoringDestination.spec.parameters for the
-// victoriametrics class: the labels the target VMAgent selects VMPodScrapes by.
+// destinationParameters is MonitoringDestination.spec.parameters of the
+// victoriametrics class.
 type destinationParameters struct {
 	VMPodScrapeLabels map[string]string `json:"vmPodScrapeLabels,omitempty"`
 	Interval          string            `json:"interval,omitempty"`
@@ -60,234 +68,364 @@ type destinationParameters struct {
 // Reconciler turns one binding into VMPodScrapes.
 type Reconciler struct {
 	client.Client
-	cc monitoring.ClassController
+
+	cc         monitoring.ClassController
+	className  string
+	ownBinding predicate.Predicate
 }
 
-// Setup wires the controller: bindings of our class are the primary
-// resource; Instances (status.monitoring.sources changes) and the class (claim) are
-// mapped back onto bindings.
-func Setup(mgr ctrl.Manager) error {
-	r := &Reconciler{Client: mgr.GetClient(), cc: monitoring.ClassController{Client: mgr.GetClient(), ControllerName: ControllerName}}
-	return ctrl.NewControllerManagedBy(mgr).
+// NewReconciler returns a Reconciler for the bindings of the named class.
+func NewReconciler(c client.Client, className string) *Reconciler {
+	return &Reconciler{
+		Client:     c,
+		cc:         monitoring.ClassController{Client: c, ControllerName: ControllerName},
+		className:  className,
+		ownBinding: monitoring.BindingPredicate(className),
+	}
+}
+
+// Setup wires two controllers: one claims the MonitoringClasses naming
+// ControllerName, the other renders the bindings of className and is
+// re-triggered by changes to an Instance's monitoring sources and to a
+// destination's spec.
+func Setup(mgr ctrl.Manager, className string) error {
+	r := NewReconciler(mgr.GetClient(), className)
+	ownClass := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		class, ok := obj.(*monitoringv1alpha1.MonitoringClass)
+		return ok && class.Spec.ControllerName == ControllerName
+	})
+	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("monitoring-victoriametrics-class").
+		For(&monitoringv1alpha1.MonitoringClass{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}, ownClass)).
+		Complete(reconcile.Func(r.claim)); err != nil {
+		return fmt.Errorf("set up class controller: %w", err)
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).
 		Named("monitoring-victoriametrics").
-		For(&monitoringv1alpha1.MonitoringBinding{}, builder.WithPredicates(monitoring.BindingPredicate(ClassName))).
-		Watches(&corev1alpha1.Instance{}, handler.EnqueueRequestsFromMapFunc(r.bindingsForInstance)).
-		Watches(&monitoringv1alpha1.MonitoringClass{}, handler.EnqueueRequestsFromMapFunc(r.claim),
+		For(&monitoringv1alpha1.MonitoringBinding{}, builder.WithPredicates(r.ownBinding)).
+		Watches(&corev1alpha1.Instance{}, handler.EnqueueRequestsFromMapFunc(r.bindingsForInstance),
+			builder.WithPredicates(sourcesChanged())).
+		Watches(&monitoringv1alpha1.MonitoringDestination{}, handler.EnqueueRequestsFromMapFunc(r.bindingsForDestination),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Complete(r)
-}
-
-// claim sets Accepted on our class whenever it appears or changes; nothing to
-// enqueue since bindings of an unclaimed class are not Accepted anyway and
-// core re-resolves them once the class is claimed.
-func (r *Reconciler) claim(ctx context.Context, _ client.Object) []reconcile.Request {
-	if _, err := r.cc.Claim(ctx); err != nil {
-		log.FromContext(ctx).Error(err, "claiming classes failed")
+		Complete(r); err != nil {
+		return fmt.Errorf("set up binding controller: %w", err)
 	}
 	return nil
 }
 
-func (r *Reconciler) bindingsForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
-	bindings, err := monitoring.ListBindingsForInstance(ctx, r.Client, obj.GetNamespace(), obj.GetName())
+// sourcesChanged passes Instance events that can change what is scraped.
+func sourcesChanged() predicate.Predicate { //nolint:ireturn // controller-runtime's builder takes the interface
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldIn, okOld := e.ObjectOld.(*corev1alpha1.Instance)
+			newIn, okNew := e.ObjectNew.(*corev1alpha1.Instance)
+			return !okOld || !okNew || !equality.Semantic.DeepEqual(sourcesOf(oldIn), sourcesOf(newIn))
+		},
+		DeleteFunc: func(event.DeleteEvent) bool { return false },
+	}
+}
+
+// Reconcile renders the VMPodScrapes of one binding and reports the outcome
+// in the binding's Configured condition.
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	b := &monitoringv1alpha1.MonitoringBinding{}
+	if err := r.Get(ctx, req.NamespacedName, b); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !b.DeletionTimestamp.IsZero() || !r.owns(b) {
+		return ctrl.Result{}, nil // VMPodScrapes are owned by the binding
+	}
+	if !monitoring.IsAccepted(b) {
+		reason, message := notAcceptedReason(b)
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, reason, message)
+	}
+
+	in, dst, err := r.cc.Resolve(ctx, b)
 	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, err.Error())
+	}
+	params, err := parametersOf(dst)
+	if err != nil {
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, err.Error())
+	}
+	sources := sourcesOf(in)
+	if sources == nil || len(sources.Metrics) == 0 {
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing, "the Instance publishes no metrics endpoints yet")
+	}
+	scrapes, err := vmPodScrapesFor(b, r.className, sources, params)
+	if err != nil {
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, err.Error())
+	}
+	names, err := r.applyAll(ctx, b, scrapes)
+	if err != nil {
+		return r.applyFailed(ctx, b, err)
+	}
+	if err := r.cc.SetDestinationReady(ctx, dst, metav1.ConditionTrue, monitoringv1alpha1.ReasonReady, readyMessage(params), ""); err != nil {
+		log.FromContext(ctx).Error(err, "writing destination Ready failed", "destination", dst.Name)
+	}
+	return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonConfigured, "VMPodScrapes "+strings.Join(names, ", "))
+}
+
+func (r *Reconciler) claim(ctx context.Context, _ reconcile.Request) (reconcile.Result, error) {
+	_, err := r.cc.Claim(ctx)
+	return reconcile.Result{}, err
+}
+
+func (r *Reconciler) owns(b *monitoringv1alpha1.MonitoringBinding) bool {
+	return r.ownBinding.Generic(event.GenericEvent{Object: b})
+}
+
+func (r *Reconciler) bindingsForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.ownBindings(ctx, obj.GetNamespace(), client.MatchingLabels{monitoringv1alpha1.BindingInstanceLabel: obj.GetName()})
+}
+
+func (r *Reconciler) bindingsForDestination(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.ownBindings(ctx, obj.GetNamespace(), client.MatchingLabels{monitoringv1alpha1.BindingDestinationLabel: obj.GetName()})
+}
+
+func (r *Reconciler) ownBindings(ctx context.Context, namespace string, selector client.MatchingLabels) []reconcile.Request {
+	list := &monitoringv1alpha1.MonitoringBindingList{}
+	if err := r.List(ctx, list, client.InNamespace(namespace), selector); err != nil {
+		log.FromContext(ctx).Error(err, "listing monitoring bindings failed")
 		return nil
 	}
 	var reqs []reconcile.Request
-	for i := range bindings {
-		if bindings[i].Labels[monitoringv1alpha1.BindingClassLabel] == ClassName {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&bindings[i])})
+	for i := range list.Items {
+		if r.owns(&list.Items[i]) {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 		}
 	}
 	return reqs
 }
 
-// Reconcile renders the VMPodScrapes of one binding.
-func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+// applyAll applies the binding's VMPodScrapes, deletes the ones of
+// components that no longer publish metrics and returns the sorted names.
+func (r *Reconciler) applyAll(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding, scrapes []*unstructured.Unstructured) ([]string, error) {
+	names := make([]string, 0, len(scrapes))
+	for _, s := range scrapes {
+		if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(s), client.FieldOwner(ControllerName), client.ForceOwnership); err != nil {
+			return nil, fmt.Errorf("apply VMPodScrape %s: %w", s.GetName(), err)
+		}
+		names = append(names, s.GetName())
+	}
+	slices.Sort(names)
 
-	b := &monitoringv1alpha1.MonitoringBinding{}
-	if err := r.Get(ctx, req.NamespacedName, b); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	list := &unstructured.UnstructuredList{}
+	list.SetAPIVersion(vmPodScrapeAPIVersion)
+	list.SetKind(vmPodScrapeKind + "List")
+	if err := r.List(ctx, list, client.InNamespace(b.Namespace),
+		client.MatchingLabels{monitoringv1alpha1.BindingInstanceLabel: b.Spec.InstanceRef.Name}); err != nil {
+		return nil, fmt.Errorf("list VMPodScrapes: %w", err)
 	}
-	if !b.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil // VMPodScrapes are owned by the binding
-	}
-	if !monitoring.IsAccepted(b) {
-		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, notAcceptedReason(b), "waiting for core to accept the binding")
-	}
-
-	in, dst, err := r.cc.Resolve(ctx, b)
-	if err != nil {
-		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, err.Error())
-	}
-	params := destinationParameters{}
-	if dst.Spec.Parameters != nil {
-		if err := json.Unmarshal(dst.Spec.Parameters.Raw, &params); err != nil {
-			return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, "destination parameters: "+err.Error())
+	var errs []error
+	for i := range list.Items {
+		s := &list.Items[i]
+		owner := metav1.GetControllerOf(s)
+		if owner == nil || owner.UID != b.UID || slices.Contains(names, s.GetName()) {
+			continue
+		}
+		if err := r.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("delete VMPodScrape %s: %w", s.GetName(), err))
 		}
 	}
-	if err := r.cc.SetDestinationReady(ctx, dst, metav1.ConditionTrue, "Configured", "VMPodScrapes are selected by labels "+labelsString(params.VMPodScrapeLabels), ""); err != nil {
-		logger.Error(err, "destination Ready could not be written")
-	}
-
-	if in.Status.Monitoring == nil || in.Status.Monitoring.Sources == nil || len(in.Status.Monitoring.Sources.Metrics) == 0 {
-		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing, "the Instance publishes no metrics endpoints yet")
-	}
-
-	desired := map[string]struct{}{}
-	for _, pm := range vmPodScrapesFor(b, in, in.Status.Monitoring.Sources, params) {
-		desired[pm.GetName()] = struct{}{}
-		if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(pm), client.FieldOwner(ControllerName), client.ForceOwnership); err != nil {
-			return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonApplyFailed, fmt.Sprintf("apply VMPodScrape %s: %v", pm.GetName(), err))
-		}
-	}
-	if err := r.pruneStale(ctx, b, desired); err != nil {
-		logger.Error(err, "pruning stale VMPodScrapes failed")
-	}
-
-	names := make([]string, 0, len(desired))
-	for n := range desired {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonConfigured,
-		fmt.Sprintf("VMPodScrapes %s", strings.Join(names, ", ")))
+	return names, errors.Join(errs...)
 }
 
-// notAcceptedReason picks the Configured reason for a binding that is not
-// Accepted: Pending while core has not decided, Retained when VMPodScrapes
-// from an earlier acceptance are kept, NotAccepted otherwise.
-func notAcceptedReason(b *monitoringv1alpha1.MonitoringBinding) monitoringv1alpha1.ConfiguredReason {
+func (r *Reconciler) applyFailed(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding, err error) (ctrl.Result, error) {
+	message := err.Error()
+	if meta.IsNoMatchError(err) {
+		message = "the VictoriaMetrics Operator CRDs are not installed: " + message
+	}
+	if err := r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonApplyFailed, message); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: applyRetryInterval}, nil
+}
+
+func parametersOf(dst *monitoringv1alpha1.MonitoringDestination) (destinationParameters, error) {
+	params := destinationParameters{}
+	if dst.Spec.Parameters == nil || len(dst.Spec.Parameters.Raw) == 0 {
+		return params, nil
+	}
+	if err := json.Unmarshal(dst.Spec.Parameters.Raw, &params); err != nil {
+		return params, fmt.Errorf("destination parameters: %w", err)
+	}
+	return params, nil
+}
+
+func sourcesOf(in *corev1alpha1.Instance) *corev1alpha1.MonitoringSources {
+	if in.Status.Monitoring == nil {
+		return nil
+	}
+	return in.Status.Monitoring.Sources
+}
+
+// notAcceptedReason picks the Configured reason of a binding that is not
+// Accepted: Retained while VMPodScrapes from an earlier acceptance are kept,
+// NotAccepted once core rejected it, Pending while core has not decided.
+func notAcceptedReason(b *monitoringv1alpha1.MonitoringBinding) (monitoringv1alpha1.ConfiguredReason, string) {
 	accepted := meta.FindStatusCondition(b.Status.Conditions, monitoringv1alpha1.MonitoringBindingConditionAccepted)
-	if accepted == nil || accepted.Status == metav1.ConditionUnknown {
-		return monitoringv1alpha1.ReasonPending
+	acceptedReason := "Pending"
+	if accepted != nil && accepted.Status == metav1.ConditionFalse {
+		acceptedReason = accepted.Reason
 	}
 	prev := meta.FindStatusCondition(b.Status.Conditions, monitoringv1alpha1.MonitoringBindingConditionConfigured)
-	if prev != nil && (prev.Status == metav1.ConditionTrue || prev.Reason == string(monitoringv1alpha1.ReasonRetained)) {
-		return monitoringv1alpha1.ReasonRetained
+	switch {
+	case prev != nil && (prev.Status == metav1.ConditionTrue || prev.Reason == string(monitoringv1alpha1.ReasonRetained)):
+		return monitoringv1alpha1.ReasonRetained, "keeping the current VMPodScrapes while the binding is not accepted: " + acceptedReason
+	case accepted != nil && accepted.Status == metav1.ConditionFalse:
+		return monitoringv1alpha1.ReasonNotAccepted, "the binding is not accepted: " + acceptedReason
+	default:
+		return monitoringv1alpha1.ReasonPending, "waiting for the binding to be accepted"
 	}
-	return monitoringv1alpha1.ReasonNotAccepted
 }
 
-// vmPodScrapesFor builds one VMPodScrape per component, owned by the binding,
-// with one podMetricsEndpoints entry per metrics endpoint of that component.
-// A VMPodScrape has a single pod selector, so endpoints of one component must
-// share theirs; a multi-target exporter publishes one endpoint per probed
-// pod behind the same selector.
-func vmPodScrapesFor(b *monitoringv1alpha1.MonitoringBinding, in *corev1alpha1.Instance, sources *corev1alpha1.MonitoringSources, params destinationParameters) []*unstructured.Unstructured {
-	var order []string
-	byComponent := map[string]*unstructured.Unstructured{}
+func readyMessage(params destinationParameters) string {
+	if len(params.VMPodScrapeLabels) == 0 {
+		return "VMPodScrapes carry no selection labels"
+	}
+	parts := make([]string, 0, len(params.VMPodScrapeLabels))
+	for k, v := range params.VMPodScrapeLabels {
+		parts = append(parts, k+"="+v)
+	}
+	slices.Sort(parts)
+	return "VMPodScrapes are labelled " + strings.Join(parts, ",")
+}
+
+// vmPodScrapesFor builds one VMPodScrape per component, with one
+// podMetricsEndpoints entry per metrics endpoint of that component. A
+// VMPodScrape has a single pod selector, so the endpoints of one component
+// must share theirs.
+func vmPodScrapesFor(b *monitoringv1alpha1.MonitoringBinding, className string, sources *corev1alpha1.MonitoringSources, params destinationParameters) ([]*unstructured.Unstructured, error) {
+	byComponent := map[string][]corev1alpha1.MetricsEndpoint{}
 	for _, ep := range sources.Metrics {
-		pm, ok := byComponent[ep.Component]
-		if !ok {
-			pm = vmPodScrapeFor(b, in, ep, params)
-			byComponent[ep.Component] = pm
-			order = append(order, ep.Component)
+		byComponent[ep.Component] = append(byComponent[ep.Component], ep)
+	}
+	scrapes := make([]*unstructured.Unstructured, 0, len(byComponent))
+	for _, component := range slices.Sorted(maps.Keys(byComponent)) {
+		eps := byComponent[component]
+		endpoints := make([]any, 0, len(eps))
+		for _, ep := range eps {
+			if !maps.Equal(ep.PodSelector, eps[0].PodSelector) {
+				return nil, fmt.Errorf("component %s publishes metrics endpoints with different pod selectors", component)
+			}
+			endpoint, err := vmPodMetricsEndpointFor(sources, ep, params)
+			if err != nil {
+				return nil, err
+			}
+			endpoints = append(endpoints, endpoint)
 		}
-		endpoints, _, _ := unstructured.NestedSlice(pm.Object, "spec", "podMetricsEndpoints")
-		endpoints = append(endpoints, vmPodMetricsEndpointFor(sources, ep, params))
-		_ = unstructured.SetNestedSlice(pm.Object, endpoints, "spec", "podMetricsEndpoints")
+		scrapes = append(scrapes, vmPodScrapeFor(b, className, component, eps[0].PodSelector, endpoints, params))
 	}
-	out := make([]*unstructured.Unstructured, 0, len(order))
-	for _, component := range order {
-		out = append(out, byComponent[component])
-	}
-	return out
+	return scrapes, nil
 }
 
-// vmPodMetricsEndpointFor renders one scrape endpoint, stamped with the identity
-// labels through relabelings. A multi-target probe (params.target) relabels
-// the target into the instance label so each probed pod is its own series.
-func vmPodMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alpha1.MetricsEndpoint, params destinationParameters) map[string]any {
-	endpoint := map[string]any{
-		"path":   ep.Path,
-		"scheme": ep.Scheme,
+// vmPodMetricsEndpointFor renders one scrape endpoint, stamped with the
+// identity labels through relabelConfigs.
+func vmPodMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alpha1.MetricsEndpoint, params destinationParameters) (map[string]any, error) {
+	endpoint := map[string]any{}
+	switch ep.Port.Type {
+	case intstr.String:
+		endpoint["port"] = ep.Port.StrVal
+	case intstr.Int:
+		endpoint["portNumber"] = int64(ep.Port.IntVal)
 	}
-	if endpoint["path"] == "" {
-		endpoint["path"] = "/metrics"
+	if ep.Path != "" {
+		endpoint["path"] = ep.Path
 	}
-	if endpoint["scheme"] == "" {
-		endpoint["scheme"] = "http"
-	}
-	if ep.Port.Name != "" {
-		endpoint["port"] = ep.Port.Name
-	} else if ep.Port.Number != nil {
-		endpoint["portNumber"] = int64(*ep.Port.Number)
+	if ep.Scheme != "" {
+		endpoint["scheme"] = ep.Scheme
 	}
 	if params.Interval != "" {
 		endpoint["interval"] = params.Interval
 	}
-	if ep.TLS != nil {
-		tls := map[string]any{"insecureSkipVerify": ep.TLS.InsecureSkipVerify}
-		if ep.TLS.ServerName != "" {
-			tls["serverName"] = ep.TLS.ServerName
-		}
-		if ep.TLS.CASecretRef != nil {
-			tls["ca"] = map[string]any{"secret": map[string]any{"name": ep.TLS.CASecretRef.Name, "key": ep.TLS.CASecretRef.Key}}
-		}
-		endpoint["tlsConfig"] = tls
-	}
-	if ep.Auth != nil {
-		for _, cred := range sources.Credentials {
-			if cred.Profile == ep.Auth.CredentialProfile {
-				endpoint["basicAuth"] = map[string]any{
-					"username": map[string]any{"name": cred.SecretRef.Name, "key": "username"},
-					"password": map[string]any{"name": cred.SecretRef.Name, "key": "password"},
-				}
-			}
-		}
-	}
 	if len(ep.Params) > 0 {
-		p := map[string]any{}
-		for k, v := range ep.Params {
-			p[k] = []any{v}
+		p := make(map[string]any, len(ep.Params))
+		for k, values := range ep.Params {
+			p[k] = stringsToAny(values)
 		}
 		endpoint["params"] = p
 	}
-
-	identity := map[string]string{}
-	for k, v := range sources.Identity.Labels {
-		identity[k] = v
+	if ep.TLS != nil {
+		endpoint["tlsConfig"] = tlsConfigFor(ep.TLS)
 	}
-	identity["openeverest_component"] = ep.Component
-	identity["openeverest_kind"] = ep.Kind
-	keys := make([]string, 0, len(identity))
-	for k := range identity {
-		keys = append(keys, k)
+	if ep.Auth != nil {
+		idx := slices.IndexFunc(sources.Credentials, func(c corev1alpha1.MonitoringCredential) bool {
+			return c.Profile == ep.Auth.CredentialProfile
+		})
+		if idx < 0 {
+			return nil, fmt.Errorf("component %s authenticates with credential profile %q, which the Instance does not publish",
+				ep.Component, ep.Auth.CredentialProfile)
+		}
+		secret := sources.Credentials[idx].SecretRef.Name
+		endpoint["basicAuth"] = map[string]any{
+			"username": secretKeySelector(secret, "username"),
+			"password": secretKeySelector(secret, "password"),
+		}
 	}
-	sort.Strings(keys)
-	relabelings := make([]any, 0, len(keys))
-	for _, k := range keys {
-		relabelings = append(relabelings, map[string]any{"targetLabel": k, "replacement": identity[k], "action": "replace"})
-	}
-	if _, ok := ep.Params["target"]; ok {
-		relabelings = append(relabelings, map[string]any{"sourceLabels": []any{"__param_target"}, "targetLabel": "instance", "action": "replace"})
-	}
-	endpoint["relabelConfigs"] = relabelings
-	return endpoint
+	endpoint["relabelConfigs"] = relabelConfigsFor(sources.Identity.Labels, ep)
+	return endpoint, nil
 }
 
-// vmPodScrapeFor builds the VMPodScrape shell for one component: selector,
-// labels and owner, with no endpoints yet.
-func vmPodScrapeFor(b *monitoringv1alpha1.MonitoringBinding, in *corev1alpha1.Instance, ep corev1alpha1.MetricsEndpoint, params destinationParameters) *unstructured.Unstructured {
-	selector := map[string]any{}
-	for k, v := range ep.PodSelector {
-		selector[k] = v
+func tlsConfigFor(tls *corev1alpha1.MetricsEndpointTLS) map[string]any {
+	cfg := map[string]any{}
+	if tls.CA != nil {
+		cfg["ca"] = map[string]any{"secret": secretKeySelector(tls.CA.Name, tls.CA.Key)}
 	}
-	labels := map[string]any{
-		monitoringv1alpha1.BindingInstanceLabel: in.Name,
-		monitoringv1alpha1.BindingClassLabel:    ClassName,
+	if tls.ServerName != "" {
+		cfg["serverName"] = tls.ServerName
 	}
+	if tls.InsecureSkipVerify {
+		cfg["insecureSkipVerify"] = true
+	}
+	return cfg
+}
+
+func secretKeySelector(name, key string) map[string]any {
+	return map[string]any{"name": name, "key": key}
+}
+
+// relabelConfigsFor stamps the identity labels plus the endpoint's component
+// and kind. A multi-target probe (params.target) also relabels the target
+// into the instance label so each probed pod is its own series.
+func relabelConfigsFor(identity map[string]string, ep corev1alpha1.MetricsEndpoint) []any {
+	labels := make(map[string]string, len(identity)+2)
+	maps.Copy(labels, identity)
+	labels["openeverest_component"] = ep.Component
+	labels["openeverest_kind"] = ep.Kind
+	relabelings := make([]any, 0, len(labels)+1)
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
+		relabelings = append(relabelings, map[string]any{"action": "replace", "targetLabel": k, "replacement": labels[k]})
+	}
+	if _, ok := ep.Params["target"]; ok {
+		relabelings = append(relabelings, map[string]any{"action": "replace", "sourceLabels": []any{"__param_target"}, "targetLabel": "instance"})
+	}
+	return relabelings
+}
+
+// vmPodScrapeFor builds the VMPodScrape of one component, owned by the
+// binding and labelled for the target VMAgent's podScrapeSelector.
+func vmPodScrapeFor(b *monitoringv1alpha1.MonitoringBinding, className, component string, selector map[string]string, endpoints []any, params destinationParameters) *unstructured.Unstructured {
+	labels := make(map[string]any, len(params.VMPodScrapeLabels)+2)
 	for k, v := range params.VMPodScrapeLabels {
 		labels[k] = v
 	}
+	labels[monitoringv1alpha1.BindingInstanceLabel] = b.Spec.InstanceRef.Name
+	labels[monitoringv1alpha1.BindingClassLabel] = className
+	matchLabels := make(map[string]any, len(selector))
+	for k, v := range selector {
+		matchLabels[k] = v
+	}
 	owner := monitoring.OwnedBy(b)
 
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": vmPodScrapeGVK.GroupVersion().String(),
-		"kind":       vmPodScrapeGVK.Kind,
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": vmPodScrapeAPIVersion,
+		"kind":       vmPodScrapeKind,
 		"metadata": map[string]any{
-			"name":      b.Name + "-" + strings.ToLower(ep.Component), // component names are not DNS labels
+			"name":      b.Name + "-" + strings.ToLower(component), // component names are not DNS labels
 			"namespace": b.Namespace,
 			"labels":    labels,
 			"ownerReferences": []any{map[string]any{
@@ -300,41 +438,17 @@ func vmPodScrapeFor(b *monitoringv1alpha1.MonitoringBinding, in *corev1alpha1.In
 			}},
 		},
 		"spec": map[string]any{
-			"selector":            map[string]any{"matchLabels": selector},
+			"selector":            map[string]any{"matchLabels": matchLabels},
 			"namespaceSelector":   map[string]any{"matchNames": []any{b.Namespace}},
-			"podMetricsEndpoints": []any{},
+			"podMetricsEndpoints": endpoints,
 		},
 	}}
-	return u
 }
 
-// pruneStale deletes VMPodScrapes owned by the binding whose endpoint is gone.
-func (r *Reconciler) pruneStale(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding, desired map[string]struct{}) error {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(vmPodScrapeGVK.GroupVersion().WithKind("VMPodScrapeList"))
-	if err := r.List(ctx, list, client.InNamespace(b.Namespace), client.MatchingLabels{monitoringv1alpha1.BindingInstanceLabel: b.Spec.InstanceRef.Name}); err != nil {
-		return err
+func stringsToAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
 	}
-	for i := range list.Items {
-		pm := &list.Items[i]
-		if _, keep := desired[pm.GetName()]; keep || metav1.GetControllerOf(pm) == nil || metav1.GetControllerOf(pm).UID != b.UID {
-			continue
-		}
-		if err := r.Delete(ctx, pm); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-func labelsString(l map[string]string) string {
-	if len(l) == 0 {
-		return "{}"
-	}
-	parts := make([]string, 0, len(l))
-	for k, v := range l {
-		parts = append(parts, k+"="+v)
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, ",")
+	return out
 }

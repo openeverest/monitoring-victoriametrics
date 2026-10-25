@@ -1,0 +1,86 @@
+version: "2"
+linters:
+  default: all
+  disable:
+    - err113
+    - exhaustruct # deprecated, replaced by exhaustruct_v5
+    - exhaustruct_v5
+    - godoclint # too strict doc-comment rules
+    - godox
+    - gomoddirectives
+    - gomodguard # deprecated, replaced by gomodguard_v2
+    - lll
+    - mnd
+    - nlreturn
+    - noinlineerr # inline errors are idiomatic
+    - perfsprint
+    - tagalign
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - wsl_v5 # too many empty lines makes methods too long
+  settings:
+    cyclop:
+      max-complexity: 15
+    depguard:
+      rules:
+        main:
+          files:
+            - $all
+            - '!$test'
+          deny:
+            - pkg: github.com/pkg/errors
+              desc: use "errors" instead
+    goconst:
+      # JSON/YAML schema key names (e.g. "name" when building unstructured
+      # payloads) are not magic values; inline literals are idiomatic.
+      ignore-string-values:
+        - '^name$'
+    godot:
+      exclude:
+        # Machine-readable marker comments (controller-gen / apimachinery
+        # directives such as +structType=atomic) are not prose.
+        - '^\s*\+'
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - generic
+    modernize:
+      disable:
+        # Go 1.27 promoted-field literals; keep the Kubernetes `ObjectMeta: metav1.ObjectMeta{...}` idiom.
+        - embedlit
+    unparam:
+      check-exported: true
+  exclusions:
+    generated: lax
+    rules:
+      # Table-driven tests idiomatically repeat literals and parallel
+      # structure; size/duplication linters don't apply to them.
+      - linters:
+          - cyclop
+          - dupl
+          - funlen
+          - gocognit
+          - goconst
+          - maintidx
+          - testpackage
+        path: _test\.go
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/openeverest/openeverest/v2)
+        - localmodule
+    goimports:
+      local-prefixes:
+        - github.com/openeverest
