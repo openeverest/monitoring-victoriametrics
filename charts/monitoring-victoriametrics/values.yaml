@@ -37,7 +37,7 @@ rbac:
 class:
   # -- Install the MonitoringClass
   create: true
-  # -- Name of the MonitoringClass; the controller renders only the bindings of this class
+  # -- Name of the MonitoringClass; the controller claims and serves only this class
   name: victoriametrics
   # -- Display name shown in the UI
   displayName: VictoriaMetrics

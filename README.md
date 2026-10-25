@@ -49,7 +49,7 @@ flowchart LR
    each component serves metrics natively or needs an exporter sidecar:
    `kubectl get mclass victoriametrics -o yaml` shows it under `status.providers`.
 2. **Destination.** A `MonitoringDestination` in the Instance's namespace references the class
-   and says how the generated scrapes are labelled.
+   and says how the generated VMPodScrapes are labelled and how often they are scraped.
 3. **Instance entry.** Listing the destination under `spec.monitoring.destinations[]` of an
    Instance sends that Instance's metrics there.
 4. **Binding.** OpenEverest creates one `MonitoringBinding` per entry and accepts it. The
@@ -57,11 +57,12 @@ flowchart LR
    one at a time) and publishes the serving endpoints in `Instance.status.monitoring.sources`.
 5. **VMPodScrape per component.** For every Accepted binding of the class, the controller
    applies one `VMPodScrape` per component, named `<binding>-<component>` (lower-cased), in the
-   Instance's namespace and owned by the binding. Removing the Instance entry deletes the
-   binding, and Kubernetes garbage-collects its scrapes.
+   Instance's namespace and owned by the binding. A component that stops publishing metrics
+   loses its VMPodScrape. Removing the Instance entry deletes the binding, and Kubernetes
+   garbage-collects its VMPodScrapes.
 
-The controller writes only two things besides the scrapes: the binding's `Configured`
-condition and the destination's `Ready` condition. It never writes Instances.
+Besides the VMPodScrapes, the controller writes three conditions and nothing else: the class's
+`Accepted`, each binding's `Configured` and each destination's `Ready`.
 
 Every scrape endpoint carries, through `relabelConfigs`, the identity labels
 `openeverest_instance`, `openeverest_namespace`, `openeverest_provider` and `k8s_cluster_id`
@@ -86,8 +87,8 @@ the converter is on, a VMAgent that selects the converted objects scrapes that I
 - OpenEverest with the monitoring API (see [Compatibility](#compatibility)).
 - The VictoriaMetrics Operator, or at least its CRDs (`VMPodScrape`,
   `operator.victoriametrics.com/v1beta1`). Without them the controller still starts, and every
-  binding reports `Configured=False` with reason `ApplyFailed` and retries every minute.
-- A `VMAgent` that selects the generated scrapes in the Instances' namespaces.
+  binding reports `Configured=False` with reason `ApplyFailed` and retries every 30 seconds.
+- A `VMAgent` that selects the generated VMPodScrapes in the Instances' namespaces.
 - A database provider that publishes metrics endpoints (its `Provider` declares
   `spec.monitoring.componentTypes`).
 
@@ -121,7 +122,7 @@ Instance entries are removed.
 | Chart value | Default | Purpose |
 |---|---|---|
 | `class.create` | `true` | Install the `MonitoringClass` |
-| `class.name` | `victoriametrics` | Name of the class; the controller renders only the bindings of this class |
+| `class.name` | `victoriametrics` | Name of the class; the controller claims and serves only this class |
 | `class.displayName` | `VictoriaMetrics` | Name shown in the UI |
 | `image.repository` | `ghcr.io/openeverest/monitoring-victoriametrics` | Controller image |
 | `image.tag` | chart `appVersion` | Controller image tag |
@@ -132,11 +133,11 @@ All values are in [values.yaml](charts/monitoring-victoriametrics/values.yaml).
 
 ## Usage
 
-### 1. Point a VMAgent at the scrapes
+### 1. Point a VMAgent at the VMPodScrapes
 
-Choose a label for the scrapes this extension creates and select it in your `VMAgent`. Without
-`podScrapeNamespaceSelector` a VMAgent only selects `VMPodScrape`s in its own namespace; `{}`
-selects every namespace.
+Choose a label for the VMPodScrapes this extension creates and select it through the
+`podScrapeSelector` of your `VMAgent`. Without `podScrapeNamespaceSelector` a VMAgent only
+selects `VMPodScrape`s in its own namespace; `{}` selects every namespace.
 
 ```yaml
 apiVersion: operator.victoriametrics.com/v1beta1
@@ -153,7 +154,8 @@ spec:
     - url: http://vmsingle-main.monitoring.svc:8428/api/v1/write
 ```
 
-A VMAgent with `selectAllByDefault: true` and no scrape selectors picks them up as well.
+A VMAgent that sets neither `podScrapeSelector` nor `podScrapeNamespaceSelector` selects every
+`VMPodScrape` in the cluster when `selectAllByDefault` is `true`, and none otherwise.
 
 ### 2. Create a destination
 
@@ -175,13 +177,23 @@ spec:
 | Parameter | Type | Purpose |
 |---|---|---|
 | `vmPodScrapeLabels` | map of strings | Labels put on every generated `VMPodScrape`; match them with the VMAgent's `podScrapeSelector` |
-| `interval` | duration, e.g. `30s` | Scrape interval; when unset, the VMAgent's `scrapeInterval` applies |
+| `interval` | Prometheus duration (`30s`, `1m`) | Scrape interval; when unset, the VMAgent's `scrapeInterval` applies |
 
-OpenEverest validates the parameters against the class schema and reports the result in the
-destination's `Accepted` condition. The class takes no credentials: remote write
-authentication belongs to the VMAgent. Once a binding has been rendered, the destination
-reports `Ready=True` with the labels its scrapes carry; this does not check that a VMAgent
-actually selects them.
+Neither parameter is required, but without `vmPodScrapeLabels` a VMAgent that selects by label
+picks up none of the VMPodScrapes. Any other parameter is rejected: OpenEverest reports the
+destination `Accepted=False` with reason `InvalidParameters`. The destination needs no
+credentials: the VMAgent scrapes the pods directly, and remote write authentication is part
+of the VMAgent.
+
+```bash
+kubectl -n my-databases get mdest victoriametrics
+```
+
+`Ready=True` means the parameters are valid; the message shows the labels the VMPodScrapes
+get. It does not check that a VMAgent selects them. A label key reserved for OpenEverest
+(`core.openeverest.io/instance` or `monitoring.openeverest.io/*`), an invalid label key or
+value, or an `interval` that is not a Prometheus duration gives `Ready=False` with reason
+`InvalidParameters`, and the destination's bindings report `RenderFailed`.
 
 ### 3. Send an Instance's metrics there
 
@@ -205,26 +217,35 @@ kubectl -n my-databases get monitoringbindings -l core.openeverest.io/instance=m
 kubectl -n my-databases get vmpodscrapes -l core.openeverest.io/instance=my-instance
 ```
 
-Every generated scrape is labelled with `core.openeverest.io/instance` and
-`monitoring.openeverest.io/class` in addition to `vmPodScrapeLabels`.
+Every generated VMPodScrape is labelled with `core.openeverest.io/instance` and
+`monitoring.openeverest.io/class` in addition to `vmPodScrapeLabels`. `Configured=True` lists
+the VMPodScrapes in its message. The metrics carry `openeverest_instance="my-instance"` and
+`openeverest_namespace`, so a query such as `up{openeverest_instance="my-instance"}` shows one
+series per scraped pod.
 
 ## Troubleshooting
+
+`kubectl -n my-databases get mbind <name> -o yaml` shows the binding's `Configured` condition:
+
+| Reason | Meaning |
+|---|---|
+| `Pending` | OpenEverest has not accepted the binding yet |
+| `NotAccepted` | OpenEverest rejected the binding, which owns no VMPodScrapes; the message carries its `Accepted` reason |
+| `Retained` | The binding is not accepted but still owns VMPodScrapes, which are kept as they are |
+| `EndpointNotServing` | The Instance publishes no metrics endpoints (it is starting, or its exporters are being enabled); the binding's VMPodScrapes are deleted |
+| `RenderFailed` | The Instance or destination is missing, the destination parameters are invalid, or a published endpoint cannot be rendered (for example its pod selector does not select the Instance's pods by `core.openeverest.io/instance`, or it references a credential profile the Instance does not publish); VMPodScrapes already in place are kept |
+| `ApplyFailed` | Writing a VMPodScrape failed, usually because the VictoriaMetrics Operator CRDs are not installed; retried every 30 seconds |
+| `Configured` | The VMPodScrapes are in place |
+
+If the binding is `Configured` but the VMAgent scrapes nothing, check its `podScrapeSelector`
+and `podScrapeNamespaceSelector` (or `selectAllByDefault`) against the VMPodScrapes' labels and
+namespace, and the VictoriaMetrics Operator logs for rejected VMPodScrapes.
+
+Controller logs:
 
 ```bash
 kubectl -n openeverest-system logs deploy/monitoring-victoriametrics -f
 ```
-
-The binding's `Configured` condition tells what the controller did:
-
-| Reason | Meaning |
-|---|---|
-| `Configured` | The scrapes are applied; the message lists them |
-| `Pending` | OpenEverest has not accepted the binding yet |
-| `NotAccepted` | OpenEverest rejected the binding; the message carries its `Accepted` reason |
-| `Retained` | The binding is no longer accepted; the scrapes rendered earlier are kept |
-| `EndpointNotServing` | The Instance publishes no metrics endpoints yet (still provisioning, or the exporters are being enabled) |
-| `RenderFailed` | Bad input: destination parameters, an unpublished credential profile, or one component with differing pod selectors |
-| `ApplyFailed` | Kubernetes rejected the scrapes, typically because the VictoriaMetrics Operator CRDs are missing; retried every minute |
 
 ## Development
 
@@ -249,7 +270,8 @@ only CRDs: the OpenEverest CRDs of the core version [go.mod](go.mod) pins, and t
 VictoriaMetrics Operator CRDs of `VM_OPERATOR_VERSION`. No OpenEverest controller or provider
 runs; the test publishes an Instance's monitoring sources and creates and accepts the
 Instance-owned binding itself, then asserts the generated `VMPodScrape`s, the binding and
-destination conditions, pruning, and garbage collection.
+destination conditions, pruning, and garbage collection. The controller runs in a namespace
+that enforces the restricted Pod Security Standard.
 
 ```bash
 make k3d-cluster-up
