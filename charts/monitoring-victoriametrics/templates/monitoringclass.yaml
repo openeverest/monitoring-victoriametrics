@@ -1,0 +1,31 @@
+{{- if .Values.class.create -}}
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringClass
+metadata:
+  name: {{ .Values.class.name }}
+  labels:
+    {{- include "monitoring-victoriametrics.labels" . | nindent 4 }}
+spec:
+  controllerName: openeverest.io/monitoring-victoriametrics
+  displayName: {{ .Values.class.displayName }}
+  description: Creates a VMPodScrape per metrics endpoint of every bound Instance.
+  extensionManaged:
+    requires:
+      metrics: true
+  destinationParametersSchema:
+    openAPIV3Schema:
+      type: object
+      properties:
+        vmPodScrapeLabels:
+          type: object
+          description: Labels put on the generated VMPodScrapes so the target VMAgent selects them.
+          additionalProperties:
+            type: string
+        interval:
+          type: string
+          description: Scrape interval (duration, e.g. 30s).
+  instanceParametersSchema:
+    openAPIV3Schema:
+      type: object
+      properties: {}
+{{- end }}

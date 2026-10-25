@@ -1,0 +1,19 @@
+apiVersion: v2
+name: monitoring-victoriametrics
+description: OpenEverest monitoring extension for VictoriaMetrics (VictoriaMetrics Operator). Ships the MonitoringClass and its controller.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - openeverest
+  - monitoring
+  - extension
+  - victoriametrics
+home: https://github.com/openeverest/monitoring-victoriametrics
+sources:
+  - https://github.com/openeverest/monitoring-victoriametrics
+maintainers:
+  - name: OpenEverest Contributors
+annotations:
+  openeverest.io/extension-type: monitoring
+# OpenEverest (controller + CRDs) must be installed before this chart.
