@@ -47,11 +47,18 @@ podAnnotations: {}
 # -- Labels to add to the controller pods
 podLabels: {}
 
+# Pod Security Standards "restricted"; 65532 is the nonroot user of the
+# distroless image.
 podSecurityContext:
   # -- Run as non-root
   runAsNonRoot: true
-  # -- Security context fsGroup
-  fsGroup: 65534
+  # -- Run as user ID
+  runAsUser: 65532
+  # -- Run as group ID
+  runAsGroup: 65532
+  # -- Seccomp profile
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   # -- Disallow privilege escalation
@@ -65,7 +72,12 @@ securityContext:
   # -- Run as non-root user
   runAsNonRoot: true
   # -- Run as user ID
-  runAsUser: 65534
+  runAsUser: 65532
+  # -- Run as group ID
+  runAsGroup: 65532
+  # -- Seccomp profile
+  seccompProfile:
+    type: RuntimeDefault
 
 # -- Resource limits and requests
 resources:

@@ -41,8 +41,8 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "Metrics endpoint bind address ('0' disables it).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Health probe endpoint bind address.")
 	flag.StringVar(&className, "class-name", "victoriametrics", "Name of the MonitoringClass whose bindings this controller renders.")
-	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election; the lease is named after the controller.")
-	opts := zap.Options{}
+	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election; the lease is named after the controller and the served class.")
+	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
@@ -57,7 +57,7 @@ func main() {
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
-		LeaderElectionID:       "monitoring-victoriametrics.openeverest.io",
+		LeaderElectionID:       className + ".monitoring-victoriametrics.openeverest.io",
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
