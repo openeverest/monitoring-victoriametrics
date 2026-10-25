@@ -232,7 +232,7 @@ series per scraped pod.
 | `Pending` | OpenEverest has not accepted the binding yet |
 | `NotAccepted` | OpenEverest rejected the binding, which owns no VMPodScrapes; the message carries its `Accepted` reason |
 | `Retained` | The binding is not accepted but still owns VMPodScrapes, which are kept as they are |
-| `EndpointNotServing` | The Instance publishes no metrics endpoints (it is starting, or its exporters are being enabled); the binding's VMPodScrapes are deleted |
+| `EndpointNotServing` | The Instance has not published its monitoring sources yet (it is starting), and the binding's VMPodScrapes are kept as they are; or it publishes no metrics endpoints (its exporters are being enabled), and the binding's VMPodScrapes are deleted |
 | `RenderFailed` | The Instance or destination is missing, the destination parameters are invalid, or a published endpoint cannot be rendered (for example its pod selector does not select the Instance's pods by `core.openeverest.io/instance`, or it references a credential profile the Instance does not publish); VMPodScrapes already in place are kept |
 | `ApplyFailed` | Writing a VMPodScrape failed, usually because the VictoriaMetrics Operator CRDs are not installed; retried every 30 seconds |
 | `Configured` | The VMPodScrapes are in place |

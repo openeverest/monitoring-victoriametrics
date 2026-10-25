@@ -314,11 +314,11 @@ func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
 			wantMessage: `get MonitoringDestination "vm-prod"`,
 		},
 		{
-			name:        "Instance publishes no endpoints yet",
+			name:        "Instance publishes no endpoints",
 			destination: testDestination(""),
 			instance:    testInstance(),
 			wantReason:  monitoringv1alpha1.ReasonEndpointNotServing,
-			wantMessage: "Instance orders publishes no metrics endpoints yet",
+			wantMessage: "Instance orders publishes no metrics endpoints",
 		},
 		{
 			name:        "endpoint naming an unpublished credential profile",
@@ -512,18 +512,22 @@ func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
 			return errors.New("admission webhook denied the request")
 		},
 	}
+	unpublished := testInstance()
+	unpublished.Status.Monitoring = nil
 	tests := []struct {
 		name        string
 		destination *monitoringv1alpha1.MonitoringDestination
 		instance    *corev1alpha1.Instance
 		funcs       *interceptor.Funcs
 		wantReason  monitoringv1alpha1.ConfiguredReason
+		wantMessage string
 	}{
 		{
 			name:        "destination parameters broke",
 			destination: testDestination(`{"interval":"often"}`),
 			instance:    testInstance(engineEndpoint(), proxyEndpoint()),
 			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+			wantMessage: `MonitoringDestination vm-prod: interval "often" is not a Prometheus duration`,
 		},
 		{
 			name:        "endpoint that cannot be rendered",
@@ -531,7 +535,8 @@ func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
 			instance: testInstance(engineEndpoint(), corev1alpha1.MetricsEndpoint{
 				Component: "proxy", Kind: "haproxy", PodSelector: proxyEndpoint().PodSelector,
 			}),
-			wantReason: monitoringv1alpha1.ReasonRenderFailed,
+			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+			wantMessage: `component "proxy": metrics endpoint has no port`,
 		},
 		{
 			name:        "write rejected",
@@ -539,6 +544,14 @@ func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
 			instance:    testInstance(engineEndpoint()),
 			funcs:       writeRejected,
 			wantReason:  monitoringv1alpha1.ReasonApplyFailed,
+			wantMessage: "admission webhook denied the request",
+		},
+		{
+			name:        "sources not published",
+			destination: testDestination(""),
+			instance:    unpublished,
+			wantReason:  monitoringv1alpha1.ReasonEndpointNotServing,
+			wantMessage: "Instance orders has not published monitoring sources yet",
 		},
 	}
 	for _, tt := range tests {
@@ -555,6 +568,7 @@ func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
 			configured := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, string(tt.wantReason), configured.Reason)
+			assert.Contains(t, configured.Message, tt.wantMessage)
 			assert.ElementsMatch(t, []string{testBindingName + "-engine", testBindingName + "-proxy"},
 				slices.Collect(maps.Keys(liveVMPodScrapes(t, c))), "nothing is pruned before a successful render")
 		})
@@ -661,4 +675,5 @@ func TestReconcilePrunesEveryVMPodScrapeWhenTheInstancePublishesNone(t *testing.
 	configured := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, string(monitoringv1alpha1.ReasonEndpointNotServing), configured.Reason)
+	assert.Equal(t, "Instance orders publishes no metrics endpoints", configured.Message)
 }

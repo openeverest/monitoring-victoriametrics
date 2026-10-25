@@ -68,12 +68,16 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			fmt.Sprintf("MonitoringDestination %s: %v", dst.Name, err))
 	}
 	sources := sourcesOf(in)
-	if sources == nil || len(sources.Metrics) == 0 {
+	if sources == nil {
+		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing,
+			fmt.Sprintf("Instance %s has not published monitoring sources yet", in.Name))
+	}
+	if len(sources.Metrics) == 0 {
 		if err := r.pruneStale(ctx, b, nil); err != nil {
 			return r.applyFailed(ctx, b, err)
 		}
 		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing,
-			fmt.Sprintf("Instance %s publishes no metrics endpoints yet", in.Name))
+			fmt.Sprintf("Instance %s publishes no metrics endpoints", in.Name))
 	}
 	scrapes, err := vmPodScrapesFor(b, r.className, sources, params)
 	if err != nil {
