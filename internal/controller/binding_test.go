@@ -17,10 +17,13 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -261,13 +264,6 @@ func TestReconcileAppliesVMPodScrapesAndReportsConfigured(t *testing.T) {
 	accepted := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionAccepted)
 	require.NotNil(t, accepted)
 	assert.Equal(t, metav1.ConditionTrue, accepted.Status, "core's Accepted condition survives the controller's apply")
-
-	dst := &monitoringv1alpha1.MonitoringDestination{}
-	require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "vm-prod"}, dst))
-	ready := meta.FindStatusCondition(dst.Status.Conditions, monitoringv1alpha1.MonitoringDestinationConditionReady)
-	require.NotNil(t, ready)
-	assert.Equal(t, string(monitoringv1alpha1.ReasonReady), ready.Reason)
-	assert.Equal(t, "VMPodScrapes are labelled vmagent=main", ready.Message)
 }
 
 func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
@@ -278,6 +274,8 @@ func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
 			return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "operator.victoriametrics.com", Kind: "VMPodScrape"}, SearchedVersions: []string{"v1beta1"}}
 		},
 	}
+	otherInstance := engineEndpoint()
+	otherInstance.PodSelector = map[string]string{monitoringv1alpha1.BindingInstanceLabel: "billing"}
 
 	tests := []struct {
 		name        string
@@ -294,6 +292,20 @@ func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
 			instance:    testInstance(engineEndpoint()),
 			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
 			wantMessage: "MonitoringDestination vm-prod: decode parameters",
+		},
+		{
+			name:        "invalid scrape label in the destination",
+			destination: testDestination(`{"vmPodScrapeLabels":{"not a key":"x"}}`),
+			instance:    testInstance(engineEndpoint()),
+			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+			wantMessage: `MonitoringDestination vm-prod: vmPodScrapeLabels: invalid key "not a key"`,
+		},
+		{
+			name:        "interval that is not a duration",
+			destination: testDestination(`{"interval":"often"}`),
+			instance:    testInstance(engineEndpoint()),
+			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+			wantMessage: `MonitoringDestination vm-prod: interval "often" is not a Prometheus duration`,
 		},
 		{
 			name:        "destination gone",
@@ -317,6 +329,13 @@ func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
 			}),
 			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
 			wantMessage: `credential profile "queryAnalytics" is not published by the Instance`,
+		},
+		{
+			name:        "endpoint selecting the pods of another Instance",
+			destination: testDestination(""),
+			instance:    testInstance(otherInstance),
+			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+			wantMessage: `component "engine": pod selector does not select core.openeverest.io/instance=orders`,
 		},
 		{
 			name:        "VictoriaMetrics Operator CRDs not installed",
@@ -359,47 +378,103 @@ func TestReconcileNotAccepted(t *testing.T) {
 
 	rejected := metav1.Condition{
 		Type: monitoringv1alpha1.MonitoringBindingConditionAccepted, Status: metav1.ConditionFalse, ObservedGeneration: 1,
-		Reason: monitoringv1alpha1.ReasonDestinationNotFound, LastTransitionTime: metav1.Now(),
+		Reason: monitoringv1alpha1.ReasonDestinationNotFound, Message: `MonitoringDestination "vm-prod" not found`, LastTransitionTime: metav1.Now(),
 	}
-	wasConfigured := metav1.Condition{
-		Type: monitoringv1alpha1.MonitoringBindingConditionConfigured, Status: metav1.ConditionTrue, ObservedGeneration: 1,
-		Reason: string(monitoringv1alpha1.ReasonConfigured), LastTransitionTime: metav1.Now(),
+	previously := func(reason monitoringv1alpha1.ConfiguredReason) metav1.Condition {
+		return metav1.Condition{
+			Type: monitoringv1alpha1.MonitoringBindingConditionConfigured, Status: reason.Status(), ObservedGeneration: 1,
+			Reason: string(reason), LastTransitionTime: metav1.Now(),
+		}
 	}
+	const (
+		retainedRejected = `keeping the VMPodScrapes while the binding is not accepted (DestinationNotFound: MonitoringDestination "vm-prod" not found)`
+		notAccepted      = `binding not accepted: DestinationNotFound: MonitoringDestination "vm-prod" not found`
+	)
+
 	tests := []struct {
 		name        string
 		conditions  []metav1.Condition
 		generation  int64
+		live        []client.Object
 		wantStatus  metav1.ConditionStatus
 		wantReason  monitoringv1alpha1.ConfiguredReason
 		wantMessage string
 	}{
 		{
-			name:        "core has not decided",
+			name:        "core has not decided yet",
 			wantStatus:  metav1.ConditionUnknown,
 			wantReason:  monitoringv1alpha1.ReasonPending,
 			wantMessage: "waiting for the binding to be accepted",
 		},
 		{
-			name:        "rejected before anything was rendered",
+			name:        "accepted for an older generation",
+			conditions:  []metav1.Condition{acceptedCondition(0)},
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  monitoringv1alpha1.ReasonPending,
+			wantMessage: "waiting for the binding to be accepted",
+		},
+		{
+			name:        "rejected by core",
 			conditions:  []metav1.Condition{rejected},
 			wantStatus:  metav1.ConditionFalse,
 			wantReason:  monitoringv1alpha1.ReasonNotAccepted,
-			wantMessage: "the binding is not accepted: DestinationNotFound",
+			wantMessage: notAccepted,
 		},
 		{
-			name:        "rejected after the scrapes were rendered",
-			conditions:  []metav1.Condition{rejected, wasConfigured},
+			name:        "rejected after it was configured",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonConfigured)},
+			live:        []client.Object{ownedVMPodScrape(testBindingName+"-engine", testBindingUID)},
 			wantStatus:  metav1.ConditionUnknown,
 			wantReason:  monitoringv1alpha1.ReasonRetained,
-			wantMessage: "keeping the current VMPodScrapes while the binding is not accepted: DestinationNotFound",
+			wantMessage: retainedRejected,
 		},
 		{
-			name:        "new generation not accepted yet",
-			conditions:  []metav1.Condition{acceptedCondition(1), wasConfigured},
+			name:        "still rejected",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonRetained)},
+			live:        []client.Object{ownedVMPodScrape(testBindingName+"-engine", testBindingUID)},
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  monitoringv1alpha1.ReasonRetained,
+			wantMessage: retainedRejected,
+		},
+		{
+			name:        "rejected while a render failure kept the earlier VMPodScrapes",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonRenderFailed)},
+			live:        []client.Object{ownedVMPodScrape(testBindingName+"-engine", testBindingUID)},
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  monitoringv1alpha1.ReasonRetained,
+			wantMessage: retainedRejected,
+		},
+		{
+			name:        "rejected after an EndpointNotServing that left VMPodScrapes behind",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonEndpointNotServing)},
+			live:        []client.Object{ownedVMPodScrape(testBindingName+"-engine", testBindingUID)},
+			wantStatus:  metav1.ConditionUnknown,
+			wantReason:  monitoringv1alpha1.ReasonRetained,
+			wantMessage: retainedRejected,
+		},
+		{
+			name:        "new generation not evaluated yet",
+			conditions:  []metav1.Condition{acceptedCondition(1), previously(monitoringv1alpha1.ReasonConfigured)},
 			generation:  2,
+			live:        []client.Object{ownedVMPodScrape(testBindingName+"-engine", testBindingUID)},
 			wantStatus:  metav1.ConditionUnknown,
 			wantReason:  monitoringv1alpha1.ReasonRetained,
-			wantMessage: "keeping the current VMPodScrapes while the binding is not accepted: Pending",
+			wantMessage: "keeping the VMPodScrapes while the binding is not accepted (not evaluated yet)",
+		},
+		{
+			name:        "rejected after it was configured, VMPodScrapes already gone",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonConfigured)},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  monitoringv1alpha1.ReasonNotAccepted,
+			wantMessage: notAccepted,
+		},
+		{
+			name:        "rejected, only another binding's VMPodScrapes exist",
+			conditions:  []metav1.Condition{rejected, previously(monitoringv1alpha1.ReasonConfigured)},
+			live:        []client.Object{ownedVMPodScrape("orders-vm-0000000-engine", "other")},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  monitoringv1alpha1.ReasonNotAccepted,
+			wantMessage: notAccepted,
 		},
 	}
 	for _, tt := range tests {
@@ -410,8 +485,8 @@ func TestReconcileNotAccepted(t *testing.T) {
 			if tt.generation != 0 {
 				b.Generation = tt.generation
 			}
-			c := newFakeClient(t, nil, testClass(ControllerName), b, testDestination(""), testInstance(engineEndpoint()),
-				ownedVMPodScrape(testBindingName+"-engine", testBindingUID))
+			objs := append([]client.Object{testClass(ControllerName), b, testDestination(""), testInstance(engineEndpoint())}, tt.live...)
+			c := newFakeClient(t, nil, objs...)
 
 			reconcileBinding(t, c)
 
@@ -420,7 +495,68 @@ func TestReconcileNotAccepted(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, configured.Status)
 			assert.Equal(t, string(tt.wantReason), configured.Reason)
 			assert.Equal(t, tt.wantMessage, configured.Message)
-			assert.Contains(t, liveVMPodScrapes(t, c), testBindingName+"-engine", "live VMPodScrapes are kept")
+			want := make([]string, 0, len(tt.live))
+			for _, o := range tt.live {
+				want = append(want, o.GetName())
+			}
+			assert.ElementsMatch(t, want, slices.Collect(maps.Keys(liveVMPodScrapes(t, c))), "VMPodScrapes are kept while not accepted")
+		})
+	}
+}
+
+func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
+	t.Parallel()
+
+	writeRejected := &interceptor.Funcs{
+		Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
+			return errors.New("admission webhook denied the request")
+		},
+	}
+	tests := []struct {
+		name        string
+		destination *monitoringv1alpha1.MonitoringDestination
+		instance    *corev1alpha1.Instance
+		funcs       *interceptor.Funcs
+		wantReason  monitoringv1alpha1.ConfiguredReason
+	}{
+		{
+			name:        "destination parameters broke",
+			destination: testDestination(`{"interval":"often"}`),
+			instance:    testInstance(engineEndpoint(), proxyEndpoint()),
+			wantReason:  monitoringv1alpha1.ReasonRenderFailed,
+		},
+		{
+			name:        "endpoint that cannot be rendered",
+			destination: testDestination(""),
+			instance: testInstance(engineEndpoint(), corev1alpha1.MetricsEndpoint{
+				Component: "proxy", Kind: "haproxy", PodSelector: proxyEndpoint().PodSelector,
+			}),
+			wantReason: monitoringv1alpha1.ReasonRenderFailed,
+		},
+		{
+			name:        "write rejected",
+			destination: testDestination(""),
+			instance:    testInstance(engineEndpoint()),
+			funcs:       writeRejected,
+			wantReason:  monitoringv1alpha1.ReasonApplyFailed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newFakeClient(t, tt.funcs,
+				testClass(ControllerName), acceptedBinding(), tt.destination, tt.instance,
+				ownedVMPodScrape(testBindingName+"-engine", testBindingUID),
+				ownedVMPodScrape(testBindingName+"-proxy", testBindingUID),
+			)
+
+			reconcileBinding(t, c)
+
+			configured := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionConfigured)
+			require.NotNil(t, configured)
+			assert.Equal(t, string(tt.wantReason), configured.Reason)
+			assert.ElementsMatch(t, []string{testBindingName + "-engine", testBindingName + "-proxy"},
+				slices.Collect(maps.Keys(liveVMPodScrapes(t, c))), "nothing is pruned before a successful render")
 		})
 	}
 }
@@ -430,31 +566,45 @@ func TestReconcileIgnoresBindingsItDoesNotServe(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		classes []client.Object
 		binding func(b *monitoringv1alpha1.MonitoringBinding)
 	}{
 		{
-			name: "binding of another class",
+			name:    "binding of another class",
+			classes: []client.Object{testClass(ControllerName)},
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
 				b.Labels[monitoringv1alpha1.BindingClassLabel] = "prometheus"
 			},
 		},
 		{
-			name: "ProviderManaged binding",
+			name:    "ProviderManaged binding",
+			classes: []client.Object{testClass(ControllerName)},
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
 				b.Spec.ExecutionMode = corev1alpha1.MonitoringExecutionModeProviderManaged
 			},
 		},
 		{
 			name:    "execution mode not resolved yet",
+			classes: []client.Object{testClass(ControllerName)},
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) { b.Spec.ExecutionMode = "" },
+		},
+		{
+			name:    "class of another controller",
+			classes: []client.Object{testClass("openeverest.io/monitoring-prometheus")},
+		},
+		{
+			name: "class not installed",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b := acceptedBinding()
-			tt.binding(b)
-			c := newFakeClient(t, nil, testClass(ControllerName), testDestination(""), testInstance(engineEndpoint()), b)
+			if tt.binding != nil {
+				tt.binding(b)
+			}
+			objs := append([]client.Object{testDestination(""), testInstance(engineEndpoint()), b}, tt.classes...)
+			c := newFakeClient(t, nil, objs...)
 
 			res := reconcileBinding(t, c)
 
@@ -491,4 +641,24 @@ func TestReconcilePrunesVMPodScrapesOfComponentsNoLongerPublished(t *testing.T) 
 	configured := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, "VMPodScrapes "+testBindingName+"-engine", configured.Message)
+}
+
+func TestReconcilePrunesEveryVMPodScrapeWhenTheInstancePublishesNone(t *testing.T) {
+	t.Parallel()
+	c := newFakeClient(t, nil,
+		testClass(ControllerName),
+		testDestination(""),
+		testInstance(),
+		acceptedBinding(),
+		ownedVMPodScrape(testBindingName+"-engine", testBindingUID),
+		ownedVMPodScrape(testBindingName+"-proxy", testBindingUID),
+		ownedVMPodScrape("orders-vm-0000000-proxy", "other"),
+	)
+
+	reconcileBinding(t, c)
+
+	assert.Equal(t, []string{"orders-vm-0000000-proxy"}, slices.Collect(maps.Keys(liveVMPodScrapes(t, c))))
+	configured := bindingCondition(t, c, monitoringv1alpha1.MonitoringBindingConditionConfigured)
+	require.NotNil(t, configured)
+	assert.Equal(t, string(monitoringv1alpha1.ReasonEndpointNotServing), configured.Reason)
 }

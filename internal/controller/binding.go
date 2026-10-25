@@ -17,7 +17,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -48,9 +47,12 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !b.DeletionTimestamp.IsZero() || !r.serves(b) {
 		return ctrl.Result{}, nil
 	}
+	ours, err := r.cc.OwnsClass(ctx, r.className)
+	if err != nil || !ours {
+		return ctrl.Result{}, err
+	}
 	if !monitoring.IsAccepted(b) {
-		reason, message := notAcceptedReason(b)
-		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, reason, message)
+		return ctrl.Result{}, r.reportNotAccepted(ctx, b)
 	}
 
 	in, dst, err := r.cc.Resolve(ctx, b)
@@ -67,6 +69,9 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	sources := sourcesOf(in)
 	if sources == nil || len(sources.Metrics) == 0 {
+		if err := r.pruneStale(ctx, b, nil); err != nil {
+			return r.applyFailed(ctx, b, err)
+		}
 		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing,
 			fmt.Sprintf("Instance %s publishes no metrics endpoints yet", in.Name))
 	}
@@ -79,13 +84,11 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return r.applyFailed(ctx, b, err)
 	}
-	if err := r.cc.SetDestinationReady(ctx, dst, monitoringv1alpha1.ReasonReady, readyMessage(params), ""); err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "writing destination Ready failed", "destination", dst.Name)
-	}
 	return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonConfigured, "VMPodScrapes "+strings.Join(names, ", "))
 }
 
-// serves reports whether b is an ExtensionManaged binding of our class.
+// serves reports whether b is an ExtensionManaged binding of our class; any
+// other binding has a different Configured writer.
 func (r *bindingReconciler) serves(b *monitoringv1alpha1.MonitoringBinding) bool {
 	return b.Spec.ExecutionMode == corev1alpha1.MonitoringExecutionModeExtensionManaged &&
 		b.Labels[monitoringv1alpha1.BindingClassLabel] == r.className
@@ -126,58 +129,74 @@ func (r *bindingReconciler) applyFailed(ctx context.Context, b *monitoringv1alph
 	return ctrl.Result{RequeueAfter: applyRetryInterval}, nil
 }
 
-// notAcceptedReason picks the Configured reason of a binding core has not
-// accepted: Retained while VMPodScrapes from an earlier acceptance are kept,
-// NotAccepted when core rejected it, Pending while core has not decided.
-func notAcceptedReason(b *monitoringv1alpha1.MonitoringBinding) (monitoringv1alpha1.ConfiguredReason, string) {
-	accepted := meta.FindStatusCondition(b.Status.Conditions, monitoringv1alpha1.MonitoringBindingConditionAccepted)
-	acceptedReason := "Pending"
-	if accepted != nil && accepted.Status == metav1.ConditionFalse {
-		acceptedReason = accepted.Reason
+// reportNotAccepted reports a binding core has not accepted. Its
+// VMPodScrapes are kept until core accepts it again or deletes it.
+func (r *bindingReconciler) reportNotAccepted(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding) error {
+	live, err := r.ownedVMPodScrapes(ctx, b)
+	if err != nil {
+		return err
 	}
-	configured := meta.FindStatusCondition(b.Status.Conditions, monitoringv1alpha1.MonitoringBindingConditionConfigured)
+	reason, message := notAcceptedReason(b, len(live) > 0)
+	return r.cc.SetConfigured(ctx, b, reason, message)
+}
+
+// notAcceptedReason picks the Configured reason of a binding core has not
+// accepted: Retained while VMPodScrapes the binding owns are kept,
+// NotAccepted when core rejected it, Pending while core has not decided.
+func notAcceptedReason(b *monitoringv1alpha1.MonitoringBinding, retained bool) (monitoringv1alpha1.ConfiguredReason, string) {
+	accepted := meta.FindStatusCondition(b.Status.Conditions, monitoringv1alpha1.MonitoringBindingConditionAccepted)
+	decided := accepted != nil && accepted.ObservedGeneration == b.Generation
+	acceptedReason := "not evaluated yet"
+	if decided {
+		acceptedReason = accepted.Reason
+		if accepted.Message != "" {
+			acceptedReason += ": " + accepted.Message
+		}
+	}
 	switch {
-	case configured != nil && (configured.Status == metav1.ConditionTrue || configured.Reason == string(monitoringv1alpha1.ReasonRetained)):
-		return monitoringv1alpha1.ReasonRetained, "keeping the current VMPodScrapes while the binding is not accepted: " + acceptedReason
-	case accepted != nil && accepted.Status == metav1.ConditionFalse:
-		return monitoringv1alpha1.ReasonNotAccepted, "the binding is not accepted: " + acceptedReason
+	case retained:
+		return monitoringv1alpha1.ReasonRetained, "keeping the VMPodScrapes while the binding is not accepted (" + acceptedReason + ")"
+	case decided && accepted.Status == metav1.ConditionFalse:
+		return monitoringv1alpha1.ReasonNotAccepted, "binding not accepted: " + acceptedReason
 	default:
 		return monitoringv1alpha1.ReasonPending, "waiting for the binding to be accepted"
 	}
 }
 
-// pruneStale deletes the binding's VMPodScrapes for components the Instance
-// no longer publishes.
-func (r *bindingReconciler) pruneStale(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding, keep []string) error {
+// ownedVMPodScrapes lists the VMPodScrapes the binding controls. There are
+// none while the VictoriaMetrics Operator CRDs are not installed.
+func (r *bindingReconciler) ownedVMPodScrapes(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding) ([]unstructured.Unstructured, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetAPIVersion(vmPodScrapeAPIVersion)
 	list.SetKind(vmPodScrapeKind + "List")
-	if err := r.client.List(ctx, list, client.InNamespace(b.Namespace), client.MatchingLabels{
+	err := r.client.List(ctx, list, client.InNamespace(b.Namespace), client.MatchingLabels{
 		monitoringv1alpha1.BindingInstanceLabel: b.Spec.InstanceRef.Name,
 		monitoringv1alpha1.BindingClassLabel:    r.className,
-	}); err != nil {
-		return fmt.Errorf("list VMPodScrapes: %w", err)
+	})
+	if meta.IsNoMatchError(err) {
+		return nil, nil
 	}
-	for i := range list.Items {
-		s := &list.Items[i]
-		owner := metav1.GetControllerOf(s)
-		if owner == nil || owner.UID != b.UID || slices.Contains(keep, s.GetName()) {
+	if err != nil {
+		return nil, fmt.Errorf("list VMPodScrapes: %w", err)
+	}
+	return slices.DeleteFunc(list.Items, func(s unstructured.Unstructured) bool {
+		return !metav1.IsControlledBy(&s, b)
+	}), nil
+}
+
+// pruneStale deletes the binding's VMPodScrapes that are not in keep.
+func (r *bindingReconciler) pruneStale(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding, keep []string) error {
+	live, err := r.ownedVMPodScrapes(ctx, b)
+	if err != nil {
+		return err
+	}
+	for i := range live {
+		if slices.Contains(keep, live[i].GetName()) {
 			continue
 		}
-		if err := r.client.Delete(ctx, s); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("delete stale VMPodScrape %s: %w", s.GetName(), err)
+		if err := r.client.Delete(ctx, &live[i]); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete stale VMPodScrape %s: %w", live[i].GetName(), err)
 		}
 	}
 	return nil
-}
-
-func readyMessage(params destinationParameters) string {
-	if len(params.VMPodScrapeLabels) == 0 {
-		return "VMPodScrapes carry no selection labels"
-	}
-	parts := make([]string, 0, len(params.VMPodScrapeLabels))
-	for _, k := range slices.Sorted(maps.Keys(params.VMPodScrapeLabels)) {
-		parts = append(parts, k+"="+params.VMPodScrapeLabels[k])
-	}
-	return "VMPodScrapes are labelled " + strings.Join(parts, ",")
 }

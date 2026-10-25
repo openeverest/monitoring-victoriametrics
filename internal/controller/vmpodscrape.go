@@ -16,8 +16,10 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -27,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	monitoringv1alpha1 "github.com/openeverest/openeverest/v2/api/monitoring/v1alpha1"
@@ -37,6 +40,9 @@ const (
 	vmPodScrapeAPIVersion = "operator.victoriametrics.com/v1beta1"
 	vmPodScrapeKind       = "VMPodScrape"
 )
+
+// durationPattern is the Prometheus duration format, which VMAgent accepts.
+var durationPattern = regexp.MustCompile(`^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$`)
 
 // destinationParameters is MonitoringDestination.spec.parameters for a
 // victoriametrics class.
@@ -55,6 +61,17 @@ func decodeParameters(raw *runtime.RawExtension) (destinationParameters, error) 
 	}
 	if err := json.Unmarshal(raw.Raw, &p); err != nil {
 		return p, fmt.Errorf("decode parameters: %w", err)
+	}
+	for _, k := range slices.Sorted(maps.Keys(p.VMPodScrapeLabels)) {
+		if errs := validation.IsQualifiedName(k); len(errs) > 0 {
+			return p, fmt.Errorf("vmPodScrapeLabels: invalid key %q: %s", k, strings.Join(errs, "; "))
+		}
+		if errs := validation.IsValidLabelValue(p.VMPodScrapeLabels[k]); len(errs) > 0 {
+			return p, fmt.Errorf("vmPodScrapeLabels: invalid value for %q: %s", k, strings.Join(errs, "; "))
+		}
+	}
+	if p.Interval != "" && !durationPattern.MatchString(p.Interval) {
+		return p, fmt.Errorf("interval %q is not a Prometheus duration such as 30s or 1m", p.Interval)
 	}
 	return p, nil
 }
@@ -128,11 +145,16 @@ func (s *vmPodScrape) toUnstructured() (*unstructured.Unstructured, error) {
 // vmPodScrapesFor renders one VMPodScrape per component of the Instance's
 // published metrics endpoints, in the order the components first appear.
 // A VMPodScrape has a single pod selector, so all endpoints of a component
-// must select the same pods.
+// must select the same pods, and that selector must pin the binding's
+// Instance.
 func vmPodScrapesFor(b *monitoringv1alpha1.MonitoringBinding, className string, sources *corev1alpha1.MonitoringSources, params destinationParameters) ([]*vmPodScrape, error) {
 	var out []*vmPodScrape
 	byComponent := map[string]*vmPodScrape{}
 	for _, ep := range sources.Metrics {
+		if ep.PodSelector[monitoringv1alpha1.BindingInstanceLabel] != b.Spec.InstanceRef.Name {
+			return nil, fmt.Errorf("component %q: pod selector does not select %s=%s",
+				ep.Component, monitoringv1alpha1.BindingInstanceLabel, b.Spec.InstanceRef.Name)
+		}
 		s, ok := byComponent[ep.Component]
 		if !ok {
 			s = vmPodScrapeShell(b, className, ep, params)
@@ -176,10 +198,7 @@ func vmPodScrapeShell(b *monitoringv1alpha1.MonitoringBinding, className string,
 	}
 }
 
-// podMetricsEndpointFor renders one scrape endpoint. Identity labels are
-// stamped through relabelConfigs; a multi-target probe (params.target) moves
-// the probed target into the instance label so each target is its own
-// series.
+// podMetricsEndpointFor renders one scrape endpoint.
 func podMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alpha1.MetricsEndpoint, params destinationParameters) (podMetricsEndpoint, error) {
 	endpoint := podMetricsEndpoint{
 		Path:     ep.Path,
@@ -193,11 +212,13 @@ func podMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alp
 	if endpoint.Scheme == "" {
 		endpoint.Scheme = "http"
 	}
-	switch ep.Port.Type {
-	case intstr.String:
+	switch {
+	case ep.Port.Type == intstr.String && ep.Port.StrVal != "":
 		endpoint.Port = ep.Port.StrVal
-	case intstr.Int:
+	case ep.Port.Type == intstr.Int && ep.Port.IntVal > 0:
 		endpoint.PortNumber = ep.Port.IntVal
+	default:
+		return endpoint, errors.New("metrics endpoint has no port")
 	}
 	if ep.TLS != nil {
 		endpoint.TLSConfig = &tlsConfig{ServerName: ep.TLS.ServerName, InsecureSkipVerify: ep.TLS.InsecureSkipVerify}
@@ -218,18 +239,27 @@ func podMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alp
 			Password: corev1.SecretKeySelector{LocalObjectReference: secret, Key: corev1alpha1.CredentialSecretKeyPassword},
 		}
 	}
+	endpoint.RelabelConfigs = relabelConfigsFor(sources.Identity.Labels, ep)
+	return endpoint, nil
+}
 
-	identity := maps.Clone(sources.Identity.Labels)
-	if identity == nil {
-		identity = map[string]string{}
+// relabelConfigsFor stamps the identity labels plus the endpoint's component
+// and kind. A multi-target probe (params.target) also moves the probed
+// target into the instance label so each target is its own series.
+func relabelConfigsFor(identity map[string]string, ep corev1alpha1.MetricsEndpoint) []relabelConfig {
+	labels := map[string]string{"openeverest_component": ep.Component, "openeverest_kind": ep.Kind}
+	// Only the contract's keys: a published __address__ or __scheme__ would redirect the scrape.
+	for _, k := range []string{"openeverest_instance", "openeverest_namespace", "openeverest_provider", "k8s_cluster_id"} {
+		if v, ok := identity[k]; ok {
+			labels[k] = v
+		}
 	}
-	identity["openeverest_component"] = ep.Component
-	identity["openeverest_kind"] = ep.Kind
-	for _, k := range slices.Sorted(maps.Keys(identity)) {
-		endpoint.RelabelConfigs = append(endpoint.RelabelConfigs, relabelConfig{TargetLabel: k, Replacement: new(identity[k]), Action: "replace"})
+	out := make([]relabelConfig, 0, len(labels)+1)
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
+		out = append(out, relabelConfig{TargetLabel: k, Replacement: new(labels[k]), Action: "replace"})
 	}
 	if _, ok := ep.Params["target"]; ok {
-		endpoint.RelabelConfigs = append(endpoint.RelabelConfigs, relabelConfig{SourceLabels: []string{"__param_target"}, TargetLabel: "instance", Action: "replace"})
+		out = append(out, relabelConfig{SourceLabels: []string{"__param_target"}, TargetLabel: "instance", Action: "replace"})
 	}
-	return endpoint, nil
+	return out
 }

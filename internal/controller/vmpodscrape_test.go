@@ -255,6 +255,20 @@ func TestPodMetricsEndpointForMultiTargetProbe(t *testing.T) {
 	assert.Equal(t, map[string][]string{"target": {"mysql://127.0.0.1:3306"}}, got.Params)
 }
 
+func TestPodMetricsEndpointForStampsOnlyContractIdentityLabels(t *testing.T) {
+	t.Parallel()
+	identity := testIdentity()
+	identity.Labels["__address__"] = "collector.example.com:9100"
+	identity.Labels["__scheme__"] = "https"
+	identity.Labels["team"] = "dba"
+	sources := &corev1alpha1.MonitoringSources{Identity: identity}
+	ep := corev1alpha1.MetricsEndpoint{Component: "engine", Kind: "mysql", Port: intstr.FromString("metrics")}
+
+	got, err := podMetricsEndpointFor(sources, ep, destinationParameters{})
+	require.NoError(t, err)
+	assert.Equal(t, identityRelabelConfigs("engine", "mysql"), got.RelabelConfigs)
+}
+
 func TestVMPodScrapesForRejectsUnrenderableSources(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +277,11 @@ func TestVMPodScrapesForRejectsUnrenderableSources(t *testing.T) {
 		metrics []corev1alpha1.MetricsEndpoint
 		wantErr string
 	}{
+		{
+			name:    "endpoint without a port",
+			metrics: []corev1alpha1.MetricsEndpoint{{Component: "engine", Kind: "mysql", PodSelector: engineSelector()}},
+			wantErr: `component "engine": metrics endpoint has no port`,
+		},
 		{
 			name: "credential profile the Instance does not publish",
 			metrics: []corev1alpha1.MetricsEndpoint{{
@@ -278,6 +297,20 @@ func TestVMPodScrapesForRejectsUnrenderableSources(t *testing.T) {
 				{Component: "engine", Kind: "mysql", PodSelector: map[string]string{monitoringv1alpha1.BindingInstanceLabel: "orders"}, Port: intstr.FromString("metrics")},
 			},
 			wantErr: `metrics endpoints of component "engine" select different pods`,
+		},
+		{
+			name: "pod selector without the Instance label",
+			metrics: []corev1alpha1.MetricsEndpoint{{
+				Component: "engine", Kind: "mysql", PodSelector: map[string]string{"app.kubernetes.io/component": "pxc"}, Port: intstr.FromString("metrics"),
+			}},
+			wantErr: `component "engine": pod selector does not select core.openeverest.io/instance=orders`,
+		},
+		{
+			name: "pod selector of another Instance",
+			metrics: []corev1alpha1.MetricsEndpoint{{
+				Component: "engine", Kind: "mysql", PodSelector: map[string]string{monitoringv1alpha1.BindingInstanceLabel: "billing"}, Port: intstr.FromString("metrics"),
+			}},
+			wantErr: `component "engine": pod selector does not select core.openeverest.io/instance=orders`,
 		},
 	}
 	for _, tt := range tests {
@@ -313,6 +346,26 @@ func TestDecodeParameters(t *testing.T) {
 			name:    "labels of the wrong type",
 			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":"vmagent=main"}`)},
 			wantErr: "decode parameters",
+		},
+		{
+			name:    "invalid label key",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":{"not a key":"x"}}`)},
+			wantErr: `vmPodScrapeLabels: invalid key "not a key"`,
+		},
+		{
+			name:    "invalid label value",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":{"vmagent":"main agent"}}`)},
+			wantErr: `vmPodScrapeLabels: invalid value for "vmagent"`,
+		},
+		{
+			name:    "interval that is not a duration",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"interval":"30 seconds"}`)},
+			wantErr: `interval "30 seconds" is not a Prometheus duration`,
+		},
+		{
+			name:    "interval with units out of order",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"interval":"30s1m"}`)},
+			wantErr: `interval "30s1m" is not a Prometheus duration`,
 		},
 	}
 	for _, tt := range tests {
