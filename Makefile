@@ -16,8 +16,13 @@ RELEASE_NAMESPACE ?= openeverest-system
 
 GOLANGCI_LINT_VERSION ?= v2.14.0
 
+# CRDs of the openeverest core version pinned in go.mod, for the integration
+# tests.
+OPENEVEREST_MODULE = github.com/openeverest/openeverest/v2
+OPENEVEREST_CRDS = $$(go list -m -f '{{.Dir}}' $(OPENEVEREST_MODULE))/config/crd/bases
 # VictoriaMetrics Operator release whose CRDs the integration tests install.
 VM_OPERATOR_VERSION ?= v0.75.1
+VM_OPERATOR_CRDS = https://raw.githubusercontent.com/VictoriaMetrics/operator/$(VM_OPERATOR_VERSION)/config/crd/overlay/crd.descriptionless.yaml
 
 # k3d cluster for the integration tests (dev/k3d_config.yaml).
 K3D_CLUSTER_NAME ?= monitoring-victoriametrics-test
@@ -90,16 +95,16 @@ load-image: ## Import the controller image (IMG) into the k3d cluster.
 	k3d image import $(IMG) -c $(K3D_CLUSTER_NAME)
 
 .PHONY: install-crds
-install-crds: ## Install the CRDs of the OpenEverest version in go.mod and of the VictoriaMetrics Operator.
-	go mod download github.com/openeverest/openeverest/v2
-	kubectl apply --server-side -f "$$(go list -m -f '{{.Dir}}' github.com/openeverest/openeverest/v2)/config/crd/bases"
-	kubectl apply --server-side -f https://raw.githubusercontent.com/VictoriaMetrics/operator/$(VM_OPERATOR_VERSION)/config/crd/overlay/crd.descriptionless.yaml
-	kubectl wait --for=condition=Established --timeout=60s crd --all
+install-crds: ## Install the OpenEverest and VictoriaMetrics Operator CRDs the controller needs.
+	go mod download $(OPENEVEREST_MODULE)
+	kubectl apply --server-side -f $(OPENEVEREST_CRDS) -f $(VM_OPERATOR_CRDS)
+	kubectl wait --for=condition=Established --timeout=60s -f $(OPENEVEREST_CRDS) -f $(VM_OPERATOR_CRDS)
 
 .PHONY: deploy-ci
 deploy-ci: ## Install the chart with the image imported into k3d (IMG).
+	kubectl create namespace $(RELEASE_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl label --overwrite namespace $(RELEASE_NAMESPACE) pod-security.kubernetes.io/enforce=restricted
 	helm upgrade --install monitoring-victoriametrics $(CHART_DIR) \
-		--create-namespace \
 		--namespace $(RELEASE_NAMESPACE) \
 		--set image.repository=$(_IMG_REPO) \
 		--set image.tag=$(_IMG_TAG) \
