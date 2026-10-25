@@ -3,4 +3,4 @@ apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMPodScrape
 metadata:
   labels:
-    openeverest.io/instance: vm-it
+    core.openeverest.io/instance: vm-it

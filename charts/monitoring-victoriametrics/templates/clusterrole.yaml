@@ -14,10 +14,6 @@ rules:
   - apiGroups: [monitoring.openeverest.io]
     resources: [monitoringclasses/status, monitoringdestinations/status, monitoringbindings/status]
     verbs: [get, patch]
-  # Setting blockOwnerDeletion on a VMPodScrape owned by a binding.
-  - apiGroups: [monitoring.openeverest.io]
-    resources: [monitoringbindings/finalizers]
-    verbs: [update]
   - apiGroups: [core.openeverest.io]
     resources: [instances]
     verbs: [get, list, watch]

@@ -201,11 +201,11 @@ spec:
 ```
 
 ```bash
-kubectl -n my-databases get monitoringbindings -l openeverest.io/instance=my-instance
-kubectl -n my-databases get vmpodscrapes -l openeverest.io/instance=my-instance
+kubectl -n my-databases get monitoringbindings -l core.openeverest.io/instance=my-instance
+kubectl -n my-databases get vmpodscrapes -l core.openeverest.io/instance=my-instance
 ```
 
-Every generated scrape is labelled with `openeverest.io/instance` and
+Every generated scrape is labelled with `core.openeverest.io/instance` and
 `monitoring.openeverest.io/class` in addition to `vmPodScrapeLabels`.
 
 ## Troubleshooting

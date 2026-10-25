@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -383,7 +384,7 @@ func TestReconcileRendersOneVMPodScrapePerComponent(t *testing.T) {
 	}, proxy.GetLabels())
 	assert.Equal(t, []metav1.OwnerReference{{
 		APIVersion: "monitoring.openeverest.io/v1alpha1", Kind: "MonitoringBinding", Name: testBinding, UID: testBindingUID,
-		Controller: new(true), BlockOwnerDeletion: new(true),
+		Controller: new(true),
 	}}, proxy.GetOwnerReferences())
 	selector, _, err := unstructured.NestedStringMap(proxy.Object, "spec", "selector", "matchLabels")
 	require.NoError(t, err)
@@ -414,7 +415,7 @@ func TestReconcileRendersOneVMPodScrapePerComponent(t *testing.T) {
 	ready := meta.FindStatusCondition(dst.Status.Conditions, monitoringv1alpha1.MonitoringDestinationConditionReady)
 	require.NotNil(t, ready)
 	assert.Equal(t, metav1.ConditionTrue, ready.Status)
-	assert.Equal(t, monitoringv1alpha1.ReasonReady, ready.Reason)
+	assert.Equal(t, string(monitoringv1alpha1.ReasonReady), ready.Reason)
 	assert.Equal(t, "VMPodScrapes are labelled vmagent=main", ready.Message)
 }
 
@@ -627,6 +628,68 @@ func TestReconcileIgnoresOtherBindings(t *testing.T) {
 
 			assert.Nil(t, configured(t, c))
 			assert.Empty(t, vmPodScrapes(t, c))
+		})
+	}
+}
+
+func TestClaimClass(t *testing.T) {
+	t.Parallel()
+
+	errRejected := errors.New("status apply rejected")
+	tests := []struct {
+		name           string
+		controllerName string
+		applyErr       error
+		want           *metav1.Condition
+	}{
+		{
+			name:           "own class",
+			controllerName: ControllerName,
+			want: &metav1.Condition{
+				Type: monitoringv1alpha1.MonitoringClassConditionAccepted, Status: metav1.ConditionTrue,
+				Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + ControllerName, ObservedGeneration: 1,
+			},
+		},
+		{
+			name:           "class of another controller",
+			controllerName: "openeverest.io/monitoring-prometheus",
+		},
+		{
+			name:           "rejected claim is returned for a retry",
+			controllerName: ControllerName,
+			applyErr:       errRejected,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			class := &monitoringv1alpha1.MonitoringClass{
+				ObjectMeta: metav1.ObjectMeta{Name: testClass, Generation: 1},
+				Spec:       monitoringv1alpha1.MonitoringClassSpec{ControllerName: tt.controllerName},
+			}
+			builder := newFakeClientBuilder(t, class)
+			if tt.applyErr != nil {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
+						return tt.applyErr
+					},
+				})
+			}
+			c := builder.Build()
+
+			_, err := NewReconciler(c, testClass).claim(t.Context(), reconcile.Request{NamespacedName: types.NamespacedName{Name: testClass}})
+
+			require.ErrorIs(t, err, tt.applyErr)
+			got := &monitoringv1alpha1.MonitoringClass{}
+			require.NoError(t, c.Get(t.Context(), client.ObjectKey{Name: testClass}, got))
+			cond := meta.FindStatusCondition(got.Status.Conditions, monitoringv1alpha1.MonitoringClassConditionAccepted)
+			if tt.want == nil {
+				assert.Nil(t, cond)
+				return
+			}
+			require.NotNil(t, cond)
+			cond.LastTransitionTime = metav1.Time{}
+			assert.Equal(t, *tt.want, *cond)
 		})
 	}
 }

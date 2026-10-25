@@ -163,15 +163,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return r.applyFailed(ctx, b, err)
 	}
-	if err := r.cc.SetDestinationReady(ctx, dst, metav1.ConditionTrue, monitoringv1alpha1.ReasonReady, readyMessage(params), ""); err != nil {
+	if err := r.cc.SetDestinationReady(ctx, dst, monitoringv1alpha1.ReasonReady, readyMessage(params), ""); err != nil {
 		log.FromContext(ctx).Error(err, "writing destination Ready failed", "destination", dst.Name)
 	}
 	return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonConfigured, "VMPodScrapes "+strings.Join(names, ", "))
 }
 
-func (r *Reconciler) claim(ctx context.Context, _ reconcile.Request) (reconcile.Result, error) {
-	_, err := r.cc.Claim(ctx)
-	return reconcile.Result{}, err
+func (r *Reconciler) claim(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	class := &monitoringv1alpha1.MonitoringClass{}
+	if err := r.Get(ctx, req.NamespacedName, class); err != nil {
+		return reconcile.Result{}, client.IgnoreNotFound(err)
+	}
+	return reconcile.Result{}, r.cc.ClaimClass(ctx, class)
 }
 
 func (r *Reconciler) owns(b *monitoringv1alpha1.MonitoringBinding) bool {
@@ -419,23 +422,14 @@ func vmPodScrapeFor(b *monitoringv1alpha1.MonitoringBinding, className, componen
 	for k, v := range selector {
 		matchLabels[k] = v
 	}
-	owner := monitoring.OwnedBy(b)
 
-	return &unstructured.Unstructured{Object: map[string]any{
+	scrape := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": vmPodScrapeAPIVersion,
 		"kind":       vmPodScrapeKind,
 		"metadata": map[string]any{
 			"name":      b.Name + "-" + strings.ToLower(component), // component names are not DNS labels
 			"namespace": b.Namespace,
 			"labels":    labels,
-			"ownerReferences": []any{map[string]any{
-				"apiVersion":         owner.APIVersion,
-				"kind":               owner.Kind,
-				"name":               owner.Name,
-				"uid":                string(owner.UID),
-				"controller":         true,
-				"blockOwnerDeletion": true,
-			}},
 		},
 		"spec": map[string]any{
 			"selector":            map[string]any{"matchLabels": matchLabels},
@@ -443,6 +437,8 @@ func vmPodScrapeFor(b *monitoringv1alpha1.MonitoringBinding, className, componen
 			"podMetricsEndpoints": endpoints,
 		},
 	}}
+	scrape.SetOwnerReferences([]metav1.OwnerReference{monitoring.OwnedBy(b)})
+	return scrape
 }
 
 func stringsToAny(values []string) []any {

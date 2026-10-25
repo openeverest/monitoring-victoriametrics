@@ -43,10 +43,10 @@ spec:
                 "credentials": [{"profile": "metrics", "secretRef": {"name": "vm-it-monitoring-metrics"}}],
                 "metrics": [
                   {"component": "engine", "kind": "mysql", "port": 9104, "path": "/probe", "scheme": "http",
-                   "podSelector": {"app.kubernetes.io/instance": "vm-it", "app.kubernetes.io/component": "engine"},
+                   "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "engine"},
                    "params": {"target": ["127.0.0.1:3306"]}},
                   {"component": "proxy", "kind": "haproxy", "port": "stats", "path": "/metrics", "scheme": "http",
-                   "podSelector": {"app.kubernetes.io/instance": "vm-it", "app.kubernetes.io/component": "proxy"},
+                   "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "proxy"},
                    "auth": {"credentialProfile": "metrics"}}
                 ]}}}}
               EOF
@@ -71,7 +71,7 @@ spec:
             content: |
               kubectl -n $NAMESPACE patch instance/vm-it --subresource status --type merge --patch '{"status": {"monitoring": {"sources": {"metrics": [
                 {"component": "engine", "kind": "mysql", "port": 9104, "path": "/probe", "scheme": "http",
-                 "podSelector": {"app.kubernetes.io/instance": "vm-it", "app.kubernetes.io/component": "engine"},
+                 "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "engine"},
                  "params": {"target": ["127.0.0.1:3306"]}}]}}}}'
         - assert:
             file: 30-assert.yaml

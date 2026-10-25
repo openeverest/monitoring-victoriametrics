@@ -4,7 +4,7 @@ kind: MonitoringBinding
 metadata:
   name: vm-it-vm-ab1f7bf1
   labels:
-    openeverest.io/instance: vm-it
+    core.openeverest.io/instance: vm-it
     monitoring.openeverest.io/entry: vm
     monitoring.openeverest.io/destination: vm-it
     monitoring.openeverest.io/class: victoriametrics

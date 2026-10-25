@@ -4,19 +4,19 @@ metadata:
   name: vm-it-vm-ab1f7bf1-engine
   labels:
     vmagent: it
-    openeverest.io/instance: vm-it
+    core.openeverest.io/instance: vm-it
     monitoring.openeverest.io/class: victoriametrics
   ownerReferences:
     - apiVersion: monitoring.openeverest.io/v1alpha1
       kind: MonitoringBinding
       name: vm-it-vm-ab1f7bf1
       controller: true
-      blockOwnerDeletion: true
+      (blockOwnerDeletion == null): true
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/instance: vm-it
-      app.kubernetes.io/component: engine
+      core.openeverest.io/instance: vm-it
+      core.openeverest.io/component: engine
   namespaceSelector:
     matchNames:
       - ($namespace)
@@ -44,19 +44,19 @@ metadata:
   name: vm-it-vm-ab1f7bf1-proxy
   labels:
     vmagent: it
-    openeverest.io/instance: vm-it
+    core.openeverest.io/instance: vm-it
     monitoring.openeverest.io/class: victoriametrics
   ownerReferences:
     - apiVersion: monitoring.openeverest.io/v1alpha1
       kind: MonitoringBinding
       name: vm-it-vm-ab1f7bf1
       controller: true
-      blockOwnerDeletion: true
+      (blockOwnerDeletion == null): true
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/instance: vm-it
-      app.kubernetes.io/component: proxy
+      core.openeverest.io/instance: vm-it
+      core.openeverest.io/component: proxy
   namespaceSelector:
     matchNames:
       - ($namespace)
