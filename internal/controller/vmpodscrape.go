@@ -63,6 +63,9 @@ func decodeParameters(raw *runtime.RawExtension) (destinationParameters, error) 
 		return p, fmt.Errorf("decode parameters: %w", err)
 	}
 	for _, k := range slices.Sorted(maps.Keys(p.VMPodScrapeLabels)) {
+		if k == monitoringv1alpha1.BindingInstanceLabel || strings.HasPrefix(k, monitoringv1alpha1.GroupVersion.Group+"/") {
+			return p, fmt.Errorf("vmPodScrapeLabels: key %q is reserved for OpenEverest", k)
+		}
 		if errs := validation.IsQualifiedName(k); len(errs) > 0 {
 			return p, fmt.Errorf("vmPodScrapeLabels: invalid key %q: %s", k, strings.Join(errs, "; "))
 		}

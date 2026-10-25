@@ -348,6 +348,16 @@ func TestDecodeParameters(t *testing.T) {
 			wantErr: "decode parameters",
 		},
 		{
+			name:    "label naming the Instance",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":{"core.openeverest.io/instance":"payments"}}`)},
+			wantErr: `vmPodScrapeLabels: key "core.openeverest.io/instance" is reserved for OpenEverest`,
+		},
+		{
+			name:    "label in the monitoring API group",
+			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":{"monitoring.openeverest.io/destination":"other"}}`)},
+			wantErr: `vmPodScrapeLabels: key "monitoring.openeverest.io/destination" is reserved for OpenEverest`,
+		},
+		{
 			name:    "invalid label key",
 			raw:     &runtime.RawExtension{Raw: []byte(`{"vmPodScrapeLabels":{"not a key":"x"}}`)},
 			wantErr: `vmPodScrapeLabels: invalid key "not a key"`,
