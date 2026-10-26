@@ -39,8 +39,8 @@ import (
 func TestClassReconcilerClaimsOurClass(t *testing.T) {
 	t.Parallel()
 
-	secondClass := testClass(ControllerName)
-	secondClass.Name = "victoriametrics-eu"
+	otherClass := testClass()
+	otherClass.Name = "victoriametrics-eu"
 	errRejected := errors.New("status apply rejected")
 	tests := []struct {
 		name     string
@@ -50,22 +50,18 @@ func TestClassReconcilerClaimsOurClass(t *testing.T) {
 	}{
 		{
 			name:  "class this controller serves",
-			class: testClass(ControllerName),
+			class: testClass(),
 			want: &metav1.Condition{
-				Status: metav1.ConditionTrue, Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + ControllerName, ObservedGeneration: 1,
+				Status: metav1.ConditionTrue, Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + FieldOwner, ObservedGeneration: 1,
 			},
 		},
 		{
-			name:  "class of another controller",
-			class: testClass("openeverest.io/monitoring-prometheus"),
-		},
-		{
-			name:  "second class naming this controller",
-			class: secondClass,
+			name:  "another class",
+			class: otherClass,
 		},
 		{
 			name:     "rejected claim is returned for a retry",
-			class:    testClass(ControllerName),
+			class:    testClass(),
 			applyErr: errRejected,
 		},
 	}
@@ -82,7 +78,7 @@ func TestClassReconcilerClaimsOurClass(t *testing.T) {
 				}
 			}
 			c := newFakeClient(t, funcs, tt.class)
-			r := &classReconciler{client: c, cc: monitoring.ClassController{Client: c, ControllerName: ControllerName}, className: "victoriametrics"}
+			r := &classReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}}
 
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: tt.class.Name}})
 			require.ErrorIs(t, err, tt.applyErr)
@@ -107,46 +103,46 @@ func TestDestinationReconcilerReportsReady(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		classController string
-		parameters      string
-		wasReady        bool
-		want            *metav1.Condition
+		name       string
+		className  string
+		parameters string
+		wasReady   bool
+		want       *metav1.Condition
 	}{
 		{
-			name:            "labels to be selected by",
-			classController: ControllerName,
-			parameters:      `{"vmPodScrapeLabels":{"vmagent":"main","team":"dba"}}`,
-			want:            &metav1.Condition{Status: metav1.ConditionTrue, Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled team=dba,vmagent=main"},
+			name:       "labels to be selected by",
+			className:  "victoriametrics",
+			parameters: `{"vmPodScrapeLabels":{"vmagent":"main","team":"dba"}}`,
+			want:       &metav1.Condition{Status: metav1.ConditionTrue, Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled team=dba,vmagent=main"},
 		},
 		{
-			name:            "no parameters",
-			classController: ControllerName,
-			want:            &metav1.Condition{Status: metav1.ConditionTrue, Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled {}"},
+			name:      "no parameters",
+			className: "victoriametrics",
+			want:      &metav1.Condition{Status: metav1.ConditionTrue, Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled {}"},
 		},
 		{
-			name:            "parameters that cannot be rendered",
-			classController: ControllerName,
-			parameters:      `{"interval":"often"}`,
+			name:       "parameters that cannot be rendered",
+			className:  "victoriametrics",
+			parameters: `{"interval":"often"}`,
 			want: &metav1.Condition{
 				Status: metav1.ConditionFalse, Reason: string(monitoringv1alpha1.ReasonReadyInvalidParameters),
 				Message: `interval "often" is not a Prometheus duration such as 30s or 1m`,
 			},
 		},
 		{
-			name:            "parameters of a Ready destination broke",
-			classController: ControllerName,
-			parameters:      `{"vmPodScrapeLabels":{"vmagent":"main"},"interval":"30 seconds"}`,
-			wasReady:        true,
+			name:       "parameters of a Ready destination broke",
+			className:  "victoriametrics",
+			parameters: `{"vmPodScrapeLabels":{"vmagent":"main"},"interval":"30 seconds"}`,
+			wasReady:   true,
 			want: &metav1.Condition{
 				Status: metav1.ConditionFalse, Reason: string(monitoringv1alpha1.ReasonReadyInvalidParameters),
 				Message: `interval "30 seconds" is not a Prometheus duration such as 30s or 1m`,
 			},
 		},
 		{
-			name:            "class of another controller",
-			classController: "openeverest.io/monitoring-prometheus",
-			parameters:      `{"vmPodScrapeLabels":{"vmagent":"main"}}`,
+			name:       "destination of another class",
+			className:  "prometheus",
+			parameters: `{"vmPodScrapeLabels":{"vmagent":"main"}}`,
 		},
 	}
 	for _, tt := range tests {
@@ -154,14 +150,15 @@ func TestDestinationReconcilerReportsReady(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
 			dst := testDestination(tt.parameters)
+			dst.Spec.ClassRef.Name = tt.className
 			if tt.wasReady {
 				dst.Status.Conditions = []metav1.Condition{{
 					Type: monitoringv1alpha1.MonitoringDestinationConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1,
 					Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled vmagent=main", LastTransitionTime: metav1.Now(),
 				}}
 			}
-			c := newFakeClient(t, nil, testClass(tt.classController), dst)
-			r := &destinationReconciler{client: c, cc: monitoring.ClassController{Client: c, ControllerName: ControllerName}}
+			c := newFakeClient(t, nil, testClass(), dst)
+			r := &destinationReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}}
 
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Namespace: testNamespace, Name: "vm-prod"}})
 			require.NoError(t, err)
@@ -252,7 +249,7 @@ func TestBindingsForInstanceAndDestination(t *testing.T) {
 		binding("orders-old-vm", "orders", "victoriametrics", extension, "deleted-orders-uid"),
 		binding("billing-vm", "billing", "victoriametrics", extension, "billing-uid"),
 	)
-	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, ControllerName: ControllerName}, className: "victoriametrics"}
+	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}, className: "victoriametrics"}
 	in := testInstance()
 	in.UID = "orders-uid"
 

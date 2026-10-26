@@ -6,7 +6,6 @@ metadata:
   labels:
     {{- include "monitoring-victoriametrics.labels" . | nindent 4 }}
 spec:
-  controllerName: openeverest.io/monitoring-victoriametrics
   displayName: {{ .Values.class.displayName }}
   description: Sends metrics to a VMAgent managed by the VictoriaMetrics Operator, through one VMPodScrape per component of every bound Instance.
   extensionManaged:

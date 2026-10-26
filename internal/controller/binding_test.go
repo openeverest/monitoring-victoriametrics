@@ -122,11 +122,10 @@ func newFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Object
 	return b.Build()
 }
 
-func testClass(controllerName string) *monitoringv1alpha1.MonitoringClass {
+func testClass() *monitoringv1alpha1.MonitoringClass {
 	return &monitoringv1alpha1.MonitoringClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "victoriametrics", Generation: 1},
 		Spec: monitoringv1alpha1.MonitoringClassSpec{
-			ControllerName:   controllerName,
 			ExtensionManaged: &monitoringv1alpha1.ExtensionManagedFulfilment{},
 		},
 	}
@@ -186,7 +185,7 @@ func acceptedBinding() *monitoringv1alpha1.MonitoringBinding {
 
 func reconcileBinding(t *testing.T, c client.Client) ctrl.Result {
 	t.Helper()
-	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, ControllerName: ControllerName}, className: "victoriametrics"}
+	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}, className: "victoriametrics"}
 	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKey{Namespace: testNamespace, Name: testBindingName}})
 	require.NoError(t, err)
 	return res
@@ -233,7 +232,7 @@ func ownedVMPodScrape(name string, ownerUID types.UID) *unstructured.Unstructure
 func TestReconcileAppliesVMPodScrapesAndReportsConfigured(t *testing.T) {
 	t.Parallel()
 	c := newFakeClient(t, nil,
-		testClass(ControllerName),
+		testClass(),
 		testDestination(`{"vmPodScrapeLabels":{"vmagent":"main"},"interval":"30s"}`),
 		testInstance(engineEndpoint(), proxyEndpoint()),
 		acceptedBinding(),
@@ -350,7 +349,7 @@ func TestReconcileReportsWhyNothingIsConfigured(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			objs := []client.Object{testClass(ControllerName), acceptedBinding(), tt.instance}
+			objs := []client.Object{testClass(), acceptedBinding(), tt.instance}
 			if tt.destination != nil {
 				objs = append(objs, tt.destination)
 			}
@@ -485,7 +484,7 @@ func TestReconcileNotAccepted(t *testing.T) {
 			if tt.generation != 0 {
 				b.Generation = tt.generation
 			}
-			objs := append([]client.Object{testClass(ControllerName), b, testDestination(""), testInstance(engineEndpoint())}, tt.live...)
+			objs := append([]client.Object{testClass(), b, testDestination(""), testInstance(engineEndpoint())}, tt.live...)
 			c := newFakeClient(t, nil, objs...)
 
 			reconcileBinding(t, c)
@@ -558,7 +557,7 @@ func TestReconcileLeavesVMPodScrapesAloneWhenItCannotRender(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			c := newFakeClient(t, tt.funcs,
-				testClass(ControllerName), acceptedBinding(), tt.destination, tt.instance,
+				testClass(), acceptedBinding(), tt.destination, tt.instance,
 				ownedVMPodScrape(testBindingName+"-engine", testBindingUID),
 				ownedVMPodScrape(testBindingName+"-proxy", testBindingUID),
 			)
@@ -580,45 +579,31 @@ func TestReconcileIgnoresBindingsItDoesNotServe(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		classes []client.Object
 		binding func(b *monitoringv1alpha1.MonitoringBinding)
 	}{
 		{
-			name:    "binding of another class",
-			classes: []client.Object{testClass(ControllerName)},
+			name: "binding of another class",
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
 				b.Labels[monitoringv1alpha1.BindingClassLabel] = "prometheus"
 			},
 		},
 		{
-			name:    "ProviderManaged binding",
-			classes: []client.Object{testClass(ControllerName)},
+			name: "ProviderManaged binding",
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
 				b.Spec.ExecutionMode = corev1alpha1.MonitoringExecutionModeProviderManaged
 			},
 		},
 		{
 			name:    "execution mode not resolved yet",
-			classes: []client.Object{testClass(ControllerName)},
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) { b.Spec.ExecutionMode = "" },
-		},
-		{
-			name:    "class of another controller",
-			classes: []client.Object{testClass("openeverest.io/monitoring-prometheus")},
-		},
-		{
-			name: "class not installed",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b := acceptedBinding()
-			if tt.binding != nil {
-				tt.binding(b)
-			}
-			objs := append([]client.Object{testDestination(""), testInstance(engineEndpoint()), b}, tt.classes...)
-			c := newFakeClient(t, nil, objs...)
+			tt.binding(b)
+			c := newFakeClient(t, nil, testClass(), testDestination(""), testInstance(engineEndpoint()), b)
 
 			res := reconcileBinding(t, c)
 
@@ -633,7 +618,7 @@ func TestReconcilePrunesVMPodScrapesOfComponentsNoLongerPublished(t *testing.T) 
 	t.Parallel()
 	ctx := t.Context()
 	c := newFakeClient(t, nil,
-		testClass(ControllerName),
+		testClass(),
 		testDestination(""),
 		testInstance(engineEndpoint(), proxyEndpoint()),
 		acceptedBinding(),
@@ -660,7 +645,7 @@ func TestReconcilePrunesVMPodScrapesOfComponentsNoLongerPublished(t *testing.T) 
 func TestReconcilePrunesEveryVMPodScrapeWhenTheInstancePublishesNone(t *testing.T) {
 	t.Parallel()
 	c := newFakeClient(t, nil,
-		testClass(ControllerName),
+		testClass(),
 		testDestination(""),
 		testInstance(),
 		acceptedBinding(),

@@ -11,7 +11,6 @@ spec:
       haproxy:
         kind: haproxy
         metrics: Native
-        credentialProfiles: [metrics]
 ---
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance

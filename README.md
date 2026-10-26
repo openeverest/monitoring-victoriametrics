@@ -43,10 +43,10 @@ flowchart LR
     S -->|podScrapeSelector| A["VMAgent<br/>(VictoriaMetrics Operator)"]
 ```
 
-1. **Class.** The chart installs the cluster-scoped `victoriametrics` class
-   (`controllerName: openeverest.io/monitoring-victoriametrics`) and the controller claims it
-   (`Accepted=True`). The class requires metrics, so OpenEverest computes per provider whether
-   each component serves metrics natively or needs an exporter sidecar:
+1. **Class.** The chart installs the cluster-scoped `victoriametrics` class, and the controller
+   claims the MonitoringClass named by `class.name` (`--class-name`): `Accepted=True`. The
+   class requires metrics, so OpenEverest computes per provider whether each component serves
+   metrics natively or needs an exporter sidecar:
    `kubectl get mclass victoriametrics -o yaml` shows it under `status.providers`.
 2. **Destination.** A `MonitoringDestination` in the Instance's namespace references the class
    and says how the generated VMPodScrapes are labelled and how often they are scraped.

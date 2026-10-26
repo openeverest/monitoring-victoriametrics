@@ -140,8 +140,8 @@ jobs:
           make helm-template > /tmp/rendered.yaml
           grep -q -- '--class-name=victoriametrics' /tmp/rendered.yaml \
             || { echo '::error::the controller is not told which class to serve'; exit 1; }
-          grep -q 'controllerName: openeverest.io/monitoring-victoriametrics' /tmp/rendered.yaml \
-            || { echo '::error::the MonitoringClass does not name the controller'; exit 1; }
+          grep -A2 '^kind: MonitoringClass$' /tmp/rendered.yaml | grep -q '^  name: victoriametrics$' \
+            || { echo '::error::the MonitoringClass is not the class the controller serves'; exit 1; }
 
   test-integration:
     name: Integration / VMPodScrapes
