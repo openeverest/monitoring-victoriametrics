@@ -1,0 +1,11 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: vm-it-vm-ab1f7bf1-engine
+---
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
+metadata:
+  name: vm-it-vm-ab1f7bf1
+status:
+  (conditions[?type == 'Configured'] | [0].message): VMPodScrapes vm-it-vm-ab1f7bf1-engine

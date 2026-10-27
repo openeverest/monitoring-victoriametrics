@@ -1,0 +1,6 @@
+# VMPodScrapes are owned by the binding and go with it.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  labels:
+    core.openeverest.io/instance: vm-it

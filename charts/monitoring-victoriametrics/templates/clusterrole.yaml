@@ -1,0 +1,24 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "monitoring-victoriametrics.fullname" . }}
+  labels:
+    {{- include "monitoring-victoriametrics.labels" . | nindent 4 }}
+# A class controller reads the monitoring kinds and Instances and writes only
+# monitoring status. It never writes Instances or reads Secrets.
+rules:
+  - apiGroups: [monitoring.openeverest.io]
+    resources: [monitoringclasses, monitoringdestinations, monitoringbindings]
+    verbs: [get, list, watch]
+  - apiGroups: [monitoring.openeverest.io]
+    resources: [monitoringclasses/status, monitoringdestinations/status, monitoringbindings/status]
+    verbs: [patch]
+  - apiGroups: [core.openeverest.io]
+    resources: [instances]
+    verbs: [get, list, watch]
+  # The objects this class controller renders for each binding.
+  - apiGroups: [operator.victoriametrics.com]
+    resources: [vmpodscrapes]
+    verbs: [get, list, create, patch, delete]
+{{- end }}

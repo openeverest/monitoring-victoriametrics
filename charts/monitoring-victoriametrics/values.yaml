@@ -1,0 +1,119 @@
+# Default values for monitoring-victoriametrics.
+
+# -- Number of controller replicas; more than one requires leader election
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: ghcr.io/openeverest/monitoring-victoriametrics
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag whose default is the chart appVersion
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+# -- Override the name of the chart
+nameOverride: ""
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Specifies whether a service account should be created
+  create: true
+  # -- Annotations to add to the service account
+  annotations: {}
+  # -- Automount API credentials for the service account
+  automountServiceAccountToken: true
+  # -- The name of the service account to use. If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+rbac:
+  # -- Specifies whether RBAC resources should be created
+  create: true
+
+# The MonitoringClass this extension claims. The class is cluster-scoped and
+# installed by this chart; destinations reference it by name.
+class:
+  # -- Install the MonitoringClass
+  create: true
+  # -- Name of the MonitoringClass; the controller claims and serves only this class
+  name: victoriametrics
+  # -- Display name shown in the UI
+  displayName: VictoriaMetrics
+
+# -- Annotations to add to the controller pods
+podAnnotations: {}
+# -- Labels to add to the controller pods
+podLabels: {}
+
+# Pod Security Standards "restricted"; 65532 is the nonroot user of the
+# distroless image.
+podSecurityContext:
+  # -- Run as non-root
+  runAsNonRoot: true
+  # -- Run as user ID
+  runAsUser: 65532
+  # -- Run as group ID
+  runAsGroup: 65532
+  # -- Seccomp profile
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  # -- Disallow privilege escalation
+  allowPrivilegeEscalation: false
+  # -- Drop all capabilities
+  capabilities:
+    drop:
+      - ALL
+  # -- Read-only root filesystem
+  readOnlyRootFilesystem: true
+  # -- Run as non-root user
+  runAsNonRoot: true
+  # -- Run as user ID
+  runAsUser: 65532
+  # -- Run as group ID
+  runAsGroup: 65532
+  # -- Seccomp profile
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource limits and requests
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 20m
+    memory: 64Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: probes
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: probes
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+leaderElection:
+  # -- Enable leader election
+  enabled: true
+
+# -- Log level (debug, info, error)
+logLevel: info
+
+# -- Node selector for the controller pods
+nodeSelector: {}
+# -- Tolerations for the controller pods
+tolerations: []
+# -- Affinity for the controller pods
+affinity: {}
+# -- Extra environment variables for the controller container
+extraEnv: []

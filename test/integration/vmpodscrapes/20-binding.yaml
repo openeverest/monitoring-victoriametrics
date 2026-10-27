@@ -1,0 +1,25 @@
+# The binding core materialises for the Instance's "vm" entry.
+# __INSTANCE_UID__ is replaced with the Instance's UID.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
+metadata:
+  name: vm-it-vm-ab1f7bf1
+  labels:
+    core.openeverest.io/instance: vm-it
+    monitoring.openeverest.io/entry: vm
+    monitoring.openeverest.io/destination: vm-it
+    monitoring.openeverest.io/class: victoriametrics
+  ownerReferences:
+    - apiVersion: core.openeverest.io/v1alpha1
+      kind: Instance
+      name: vm-it
+      uid: __INSTANCE_UID__
+      controller: true
+spec:
+  instanceRef:
+    name: vm-it
+  destinationRef:
+    name: vm-it
+  classRef:
+    name: victoriametrics
+  executionMode: ExtensionManaged

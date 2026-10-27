@@ -1,0 +1,57 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Provider
+metadata:
+  name: vm-it
+spec:
+  monitoring:
+    componentTypes:
+      mysqld:
+        kind: mysql
+        metrics: Exporter
+      haproxy:
+        kind: haproxy
+        metrics: Native
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: vm-it
+spec:
+  providerRef:
+    name: vm-it
+  monitoring:
+    destinations:
+      - name: vm
+        destinationRef:
+          name: vm-it
+---
+# The credential Secret the provider publishes for the "metrics" profile.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vm-it-monitoring-metrics
+type: Opaque
+stringData:
+  username: monitor
+  password: monitor-password
+---
+# The CA the proxy's metrics endpoint is verified with.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vm-it-tls
+type: Opaque
+stringData:
+  ca.crt: not-a-real-ca
+---
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringDestination
+metadata:
+  name: vm-it
+spec:
+  classRef:
+    name: victoriametrics
+  parameters:
+    vmPodScrapeLabels:
+      vmagent: it
+    interval: 30s

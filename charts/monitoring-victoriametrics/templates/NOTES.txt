@@ -1,0 +1,10 @@
+monitoring-victoriametrics is installed in {{ .Release.Namespace }}.
+{{- if .Values.class.create }}
+
+MonitoringClass "{{ .Values.class.name }}" is now claimed by this controller:
+
+  kubectl get monitoringclass {{ .Values.class.name }}
+
+Create a MonitoringDestination in a namespace and list it under an Instance's
+spec.monitoring.destinations[] to send its metrics there.
+{{- end }}

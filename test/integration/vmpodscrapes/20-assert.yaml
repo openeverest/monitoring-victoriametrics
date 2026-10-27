@@ -1,0 +1,111 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: vm-it-vm-ab1f7bf1-engine
+  labels:
+    vmagent: it
+    core.openeverest.io/instance: vm-it
+    monitoring.openeverest.io/class: victoriametrics
+  ownerReferences:
+    - apiVersion: monitoring.openeverest.io/v1alpha1
+      kind: MonitoringBinding
+      name: vm-it-vm-ab1f7bf1
+      controller: true
+      (blockOwnerDeletion == null): true
+spec:
+  selector:
+    matchLabels:
+      core.openeverest.io/instance: vm-it
+      core.openeverest.io/component: engine
+  namespaceSelector:
+    matchNames:
+      - ($namespace)
+  podMetricsEndpoints:
+    - portNumber: 9104
+      path: /probe
+      scheme: http
+      interval: 30s
+      params:
+        target:
+          - 127.0.0.1:3306
+      (basicAuth == null): true
+      (tlsConfig == null): true
+      (relabelConfigs[?targetLabel == 'openeverest_instance'] | [0].replacement): vm-it
+      (relabelConfigs[?targetLabel == 'openeverest_namespace'] | [0].replacement): ($namespace)
+      (relabelConfigs[?targetLabel == 'openeverest_provider'] | [0].replacement): vm-it
+      (relabelConfigs[?targetLabel == 'openeverest_component'] | [0].replacement): engine
+      (relabelConfigs[?targetLabel == 'openeverest_kind'] | [0].replacement): mysql
+      (relabelConfigs[?targetLabel == 'k8s_cluster_id'] | [0].replacement): it
+      # Each probed target is its own series.
+      (relabelConfigs[?targetLabel == 'instance'] | [0].sourceLabels): [__param_target]
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: vm-it-vm-ab1f7bf1-proxy
+  labels:
+    vmagent: it
+    core.openeverest.io/instance: vm-it
+    monitoring.openeverest.io/class: victoriametrics
+  ownerReferences:
+    - apiVersion: monitoring.openeverest.io/v1alpha1
+      kind: MonitoringBinding
+      name: vm-it-vm-ab1f7bf1
+      controller: true
+      (blockOwnerDeletion == null): true
+spec:
+  selector:
+    matchLabels:
+      core.openeverest.io/instance: vm-it
+      core.openeverest.io/component: proxy
+  namespaceSelector:
+    matchNames:
+      - ($namespace)
+  podMetricsEndpoints:
+    - port: stats
+      path: /metrics
+      scheme: https
+      interval: 30s
+      tlsConfig:
+        ca:
+          secret:
+            name: vm-it-tls
+            key: ca.crt
+        serverName: vm-it-proxy
+        (insecureSkipVerify == null): true
+      basicAuth:
+        username:
+          name: vm-it-monitoring-metrics
+          key: username
+        password:
+          name: vm-it-monitoring-metrics
+          key: password
+      (params == null): true
+      (relabelConfigs[?targetLabel == 'openeverest_instance'] | [0].replacement): vm-it
+      (relabelConfigs[?targetLabel == 'openeverest_component'] | [0].replacement): proxy
+      (relabelConfigs[?targetLabel == 'openeverest_kind'] | [0].replacement): haproxy
+      (length(relabelConfigs[?targetLabel == 'instance'])): 0
+---
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
+metadata:
+  name: vm-it-vm-ab1f7bf1
+  ownerReferences:
+    - apiVersion: core.openeverest.io/v1alpha1
+      kind: Instance
+      name: vm-it
+      controller: true
+status:
+  (conditions[?type == 'Accepted'] | [0].status): "True"
+  (conditions[?type == 'Configured'] | [0].status): "True"
+  (conditions[?type == 'Configured'] | [0].reason): Configured
+  (conditions[?type == 'Configured'] | [0].message): VMPodScrapes vm-it-vm-ab1f7bf1-engine, vm-it-vm-ab1f7bf1-proxy
+---
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringDestination
+metadata:
+  name: vm-it
+status:
+  (conditions[?type == 'Ready'] | [0].status): "True"
+  (conditions[?type == 'Ready'] | [0].reason): Ready
+  (conditions[?type == 'Ready'] | [0].message): VMPodScrapes are labelled vmagent=it

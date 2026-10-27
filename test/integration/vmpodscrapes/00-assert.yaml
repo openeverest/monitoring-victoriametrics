@@ -1,0 +1,11 @@
+# The chart's class, claimed by the controller.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringClass
+metadata:
+  name: victoriametrics
+spec:
+  extensionManaged:
+    requires:
+      metrics: true
+status:
+  (conditions[?type == 'Accepted'] | [0].status): "True"
