@@ -47,7 +47,7 @@ spec:
                    "params": {"target": ["127.0.0.1:3306"]}},
                   {"component": "proxy", "kind": "haproxy", "port": "stats", "path": "/metrics", "scheme": "https",
                    "podSelector": {"core.openeverest.io/instance": "vm-it", "core.openeverest.io/component": "proxy"},
-                   "tls": {"ca": {"name": "vm-it-tls", "key": "ca.crt"}, "serverName": "vm-it-proxy"},
+                   "tls": {"ca": {"secretKeyRef": {"name": "vm-it-tls", "key": "ca.crt"}}, "serverName": "vm-it-proxy"},
                    "auth": {"credentialProfile": "metrics"}}
                 ]}}}}
               EOF

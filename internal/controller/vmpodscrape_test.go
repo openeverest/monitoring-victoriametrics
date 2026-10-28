@@ -180,7 +180,7 @@ func TestPodMetricsEndpointFor(t *testing.T) {
 				Port:   intstr.FromString("metrics"),
 				Scheme: "https",
 				TLS: &corev1alpha1.MetricsEndpointTLS{
-					CA:         &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "orders-ca"}, Key: "ca.crt"},
+					TLSConfig:  common.TLSConfig{CA: &common.CABundleSource{SecretKeyRef: &common.SecretKeyRef{Name: "orders-ca", Key: "ca.crt"}}},
 					ServerName: "orders-pxc.team-a.svc",
 				},
 			},
@@ -197,7 +197,7 @@ func TestPodMetricsEndpointFor(t *testing.T) {
 			endpoint: corev1alpha1.MetricsEndpoint{
 				Port:   intstr.FromString("metrics"),
 				Scheme: "https",
-				TLS:    &corev1alpha1.MetricsEndpointTLS{InsecureSkipVerify: true},
+				TLS:    &corev1alpha1.MetricsEndpointTLS{TLSConfig: common.TLSConfig{InsecureSkipVerify: true}},
 			},
 			want: podMetricsEndpoint{
 				Port: "metrics", Path: "/metrics", Scheme: "https",

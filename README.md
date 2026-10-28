@@ -168,6 +168,8 @@ metadata:
 spec:
   classRef:
     name: victoriametrics
+  authentication:
+    mode: Anonymous
   parameters:
     vmPodScrapeLabels:
       openeverest.io/vmagent: openeverest
@@ -181,9 +183,9 @@ spec:
 
 Neither parameter is required, but without `vmPodScrapeLabels` a VMAgent that selects by label
 picks up none of the VMPodScrapes. Any other parameter is rejected: OpenEverest reports the
-destination `Accepted=False` with reason `InvalidParameters`. The destination needs no
-credentials: the VMAgent scrapes the pods directly, and remote write authentication is part
-of the VMAgent.
+destination `Accepted=False` with reason `InvalidParameters`. The destination authenticates
+with the class's only mode, `Anonymous`, and needs no credentials: the VMAgent scrapes the
+pods directly, and remote write authentication is part of the VMAgent.
 
 ```bash
 kubectl -n my-databases get mdest victoriametrics

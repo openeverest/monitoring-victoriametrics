@@ -3,7 +3,7 @@ module github.com/openeverest/monitoring-victoriametrics
 go 1.27.1
 
 require (
-	github.com/openeverest/openeverest/v2 v2.0.0-dev.2.0.20261027151934-8e2a35e25c22
+	github.com/openeverest/openeverest/v2 v2.0.0-dev.2.0.20261028210054-b5db8609027e
 	github.com/stretchr/testify v1.12.1
 	k8s.io/api v0.37.1
 	k8s.io/apiextensions-apiserver v0.37.1
