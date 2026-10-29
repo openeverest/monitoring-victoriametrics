@@ -7,5 +7,7 @@ spec:
   extensionManaged:
     requires:
       metrics: true
+  authModes:
+    - name: Anonymous
 status:
   (conditions[?type == 'Accepted'] | [0].status): "True"

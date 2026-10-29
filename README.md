@@ -182,8 +182,8 @@ spec:
 Neither parameter is required, but without `vmPodScrapeLabels` a VMAgent that selects by label
 picks up none of the VMPodScrapes. Any other parameter is rejected: OpenEverest reports the
 destination `Accepted=False` with reason `InvalidParameters`. The destination needs no
-credentials: the VMAgent scrapes the pods directly, and remote write authentication is part
-of the VMAgent.
+`authentication`: it defaults to the class's only mode, `Anonymous`, because the VMAgent scrapes
+the pods directly and remote write authentication is part of the VMAgent.
 
 ```bash
 kubectl -n my-databases get mdest victoriametrics

@@ -225,8 +225,12 @@ func podMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alp
 	}
 	if ep.TLS != nil {
 		endpoint.TLSConfig = &tlsConfig{ServerName: ep.TLS.ServerName, InsecureSkipVerify: ep.TLS.InsecureSkipVerify}
-		if ep.TLS.CA != nil {
-			endpoint.TLSConfig.CA = &secretOrConfigMap{Secret: ep.TLS.CA.DeepCopy()}
+		if ep.TLS.CA != nil && ep.TLS.CA.SecretKeyRef != nil {
+			ref := ep.TLS.CA.SecretKeyRef
+			endpoint.TLSConfig.CA = &secretOrConfigMap{Secret: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  ref.Key,
+			}}
 		}
 	}
 	if ep.Auth != nil {

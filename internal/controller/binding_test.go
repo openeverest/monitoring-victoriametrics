@@ -127,6 +127,7 @@ func testClass() *monitoringv1alpha1.MonitoringClass {
 		ObjectMeta: metav1.ObjectMeta{Name: "victoriametrics", Generation: 1},
 		Spec: monitoringv1alpha1.MonitoringClassSpec{
 			ExtensionManaged: &monitoringv1alpha1.ExtensionManagedFulfilment{},
+			AuthModes:        []common.AuthMode{{Name: common.AuthModeAnonymous}},
 		},
 	}
 }
@@ -134,7 +135,10 @@ func testClass() *monitoringv1alpha1.MonitoringClass {
 func testDestination(parameters string) *monitoringv1alpha1.MonitoringDestination {
 	dst := &monitoringv1alpha1.MonitoringDestination{
 		ObjectMeta: metav1.ObjectMeta{Name: "vm-prod", Namespace: testNamespace, Generation: 1},
-		Spec:       monitoringv1alpha1.MonitoringDestinationSpec{ClassRef: common.ObjectRef{Name: "victoriametrics"}},
+		Spec: monitoringv1alpha1.MonitoringDestinationSpec{
+			ClassRef:       common.ObjectRef{Name: "victoriametrics"},
+			Authentication: common.Authentication{Mode: common.AuthModeAnonymous},
+		},
 	}
 	if parameters != "" {
 		dst.Spec.Parameters = &runtime.RawExtension{Raw: []byte(parameters)}

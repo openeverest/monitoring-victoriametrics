@@ -11,6 +11,8 @@ spec:
   extensionManaged:
     requires:
       metrics: true
+  authModes:
+    - name: Anonymous
   destinationParametersSchema:
     openAPIV3Schema:
       type: object
