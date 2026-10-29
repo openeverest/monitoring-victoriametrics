@@ -51,8 +51,6 @@ metadata:
 spec:
   classRef:
     name: victoriametrics
-  authentication:
-    mode: Anonymous
   parameters:
     vmPodScrapeLabels:
       vmagent: it
