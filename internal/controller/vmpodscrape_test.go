@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -205,6 +206,25 @@ func TestPodMetricsEndpointFor(t *testing.T) {
 			},
 		},
 		{
+			name: "mutual tls with a client certificate",
+			endpoint: corev1alpha1.MetricsEndpoint{
+				Port:   intstr.FromString("metrics"),
+				Scheme: "https",
+				TLS: &corev1alpha1.MetricsEndpointTLS{
+					TLSConfig:                  common.TLSConfig{CA: &common.CABundleSource{SecretKeyRef: &common.SecretKeyRef{Name: "orders-ca", Key: "ca.crt"}}},
+					ClientCertificateSecretRef: &common.SecretRef{Name: "orders-metrics-client"},
+				},
+			},
+			want: podMetricsEndpoint{
+				Port: "metrics", Path: "/metrics", Scheme: "https",
+				TLSConfig: &tlsConfig{
+					CA:        &secretOrConfigMap{Secret: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "orders-ca"}, Key: "ca.crt"}},
+					Cert:      &secretOrConfigMap{Secret: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "orders-metrics-client"}, Key: "tls.crt"}},
+					KeySecret: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "orders-metrics-client"}, Key: "tls.key"},
+				},
+			},
+		},
+		{
 			name: "basic auth from the Instance's credential profile",
 			endpoint: corev1alpha1.MetricsEndpoint{
 				Port: intstr.FromString("metrics"),
@@ -231,6 +251,57 @@ func TestPodMetricsEndpointFor(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestPodMetricsEndpointForRendersClientCertificate pins the wire shape the
+// operator reads: the client certificate is tlsConfig.cert.secret and
+// tlsConfig.keySecret, and both are absent when the endpoint has none.
+func TestPodMetricsEndpointForRendersClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	tlsConfigOf := func(t *testing.T, ep corev1alpha1.MetricsEndpoint) map[string]any {
+		t.Helper()
+		ep.Component, ep.Kind, ep.PodSelector, ep.Port, ep.Scheme = "engine", "mysql", engineSelector(), intstr.FromString("metrics"), "https"
+		sources := &corev1alpha1.MonitoringSources{Identity: testIdentity(), Metrics: []corev1alpha1.MetricsEndpoint{ep}}
+		objs, err := vmPodScrapesFor(testBinding(), "victoriametrics", sources, destinationParameters{})
+		require.NoError(t, err)
+		require.Len(t, objs, 1)
+		u, err := objs[0].toUnstructured()
+		require.NoError(t, err)
+		endpoints, found, err := unstructured.NestedSlice(u.Object, "spec", "podMetricsEndpoints")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, endpoints, 1)
+		endpoint, ok := endpoints[0].(map[string]any)
+		require.True(t, ok)
+		tls, _, err := unstructured.NestedMap(endpoint, "tlsConfig")
+		require.NoError(t, err)
+		return tls
+	}
+
+	t.Run("client certificate set", func(t *testing.T) {
+		t.Parallel()
+		tls := tlsConfigOf(t, corev1alpha1.MetricsEndpoint{
+			TLS: &corev1alpha1.MetricsEndpointTLS{ClientCertificateSecretRef: &common.SecretRef{Name: "orders-metrics-client"}},
+		})
+		assert.Equal(t, map[string]any{
+			"cert":      map[string]any{"secret": map[string]any{"name": "orders-metrics-client", "key": "tls.crt"}},
+			"keySecret": map[string]any{"name": "orders-metrics-client", "key": "tls.key"},
+		}, tls)
+	})
+
+	t.Run("client certificate unset", func(t *testing.T) {
+		t.Parallel()
+		tls := tlsConfigOf(t, corev1alpha1.MetricsEndpoint{
+			TLS: &corev1alpha1.MetricsEndpointTLS{ServerName: "orders-pxc"},
+		})
+		assert.Equal(t, map[string]any{"serverName": "orders-pxc"}, tls)
+	})
+
+	t.Run("no tls", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, tlsConfigOf(t, corev1alpha1.MetricsEndpoint{}))
+	})
 }
 
 func TestPodMetricsEndpointForMultiTargetProbe(t *testing.T) {
