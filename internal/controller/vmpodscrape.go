@@ -112,9 +112,11 @@ type podMetricsEndpoint struct {
 }
 
 type tlsConfig struct {
-	CA                 *secretOrConfigMap `json:"ca,omitempty"`
-	ServerName         string             `json:"serverName,omitempty"`
-	InsecureSkipVerify bool               `json:"insecureSkipVerify,omitempty"`
+	CA                 *secretOrConfigMap        `json:"ca,omitempty"`
+	Cert               *secretOrConfigMap        `json:"cert,omitempty"`
+	KeySecret          *corev1.SecretKeySelector `json:"keySecret,omitempty"`
+	ServerName         string                    `json:"serverName,omitempty"`
+	InsecureSkipVerify bool                      `json:"insecureSkipVerify,omitempty"`
 }
 
 type secretOrConfigMap struct {
@@ -231,6 +233,11 @@ func podMetricsEndpointFor(sources *corev1alpha1.MonitoringSources, ep corev1alp
 				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
 				Key:                  ref.Key,
 			}}
+		}
+		if ref := ep.TLS.ClientCertificateSecretRef; ref != nil {
+			secret := corev1.LocalObjectReference{Name: ref.Name}
+			endpoint.TLSConfig.Cert = &secretOrConfigMap{Secret: &corev1.SecretKeySelector{LocalObjectReference: secret, Key: corev1.TLSCertKey}}
+			endpoint.TLSConfig.KeySecret = &corev1.SecretKeySelector{LocalObjectReference: secret, Key: corev1.TLSPrivateKeyKey}
 		}
 	}
 	if ep.Auth != nil {
