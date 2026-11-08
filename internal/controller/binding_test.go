@@ -122,14 +122,31 @@ func newFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Object
 	return b.Build()
 }
 
+// testControllerName is the controller name the controller under test
+// claims classes by.
+const testControllerName = "openeverest.io/monitoring-victoriametrics"
+
+func testController(c client.Client) monitoring.ClassController {
+	return monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ControllerName: testControllerName}
+}
+
 func testClass() *monitoringv1alpha1.MonitoringClass {
 	return &monitoringv1alpha1.MonitoringClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "victoriametrics", Generation: 1},
 		Spec: monitoringv1alpha1.MonitoringClassSpec{
+			ControllerName:   testControllerName,
 			ExtensionManaged: &monitoringv1alpha1.ExtensionManagedFulfilment{},
 			AuthModes:        []common.AuthMode{{Name: common.AuthModeAnonymous}},
 		},
 	}
+}
+
+// otherControllerClass is a class claimed by another controller.
+func otherControllerClass() *monitoringv1alpha1.MonitoringClass {
+	class := testClass()
+	class.Name = "victoriametrics-other"
+	class.Spec.ControllerName = "example.com/victoriametrics"
+	return class
 }
 
 func testDestination(parameters string) *monitoringv1alpha1.MonitoringDestination {
@@ -189,7 +206,7 @@ func acceptedBinding() *monitoringv1alpha1.MonitoringBinding {
 
 func reconcileBinding(t *testing.T, c client.Client) ctrl.Result {
 	t.Helper()
-	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}, className: "victoriametrics"}
+	r := &bindingReconciler{client: c, cc: testController(c)}
 	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKey{Namespace: testNamespace, Name: testBindingName}})
 	require.NoError(t, err)
 	return res
@@ -586,9 +603,15 @@ func TestReconcileIgnoresBindingsItDoesNotServe(t *testing.T) {
 		binding func(b *monitoringv1alpha1.MonitoringBinding)
 	}{
 		{
-			name: "binding of another class",
+			name: "binding of a class that does not exist",
 			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
 				b.Labels[monitoringv1alpha1.BindingClassLabel] = "prometheus"
+			},
+		},
+		{
+			name: "binding of a class of another controller",
+			binding: func(b *monitoringv1alpha1.MonitoringBinding) {
+				b.Labels[monitoringv1alpha1.BindingClassLabel] = "victoriametrics-other"
 			},
 		},
 		{
@@ -607,7 +630,7 @@ func TestReconcileIgnoresBindingsItDoesNotServe(t *testing.T) {
 			t.Parallel()
 			b := acceptedBinding()
 			tt.binding(b)
-			c := newFakeClient(t, nil, testClass(), testDestination(""), testInstance(engineEndpoint()), b)
+			c := newFakeClient(t, nil, testClass(), otherControllerClass(), testDestination(""), testInstance(engineEndpoint()), b)
 
 			res := reconcileBinding(t, c)
 
