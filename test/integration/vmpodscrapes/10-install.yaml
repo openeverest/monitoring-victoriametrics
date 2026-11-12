@@ -3,13 +3,16 @@ kind: Provider
 metadata:
   name: vm-it
 spec:
+  componentTypes:
+    mysqld:
+      kind: mysql
+    haproxy:
+      kind: haproxy
   monitoring:
     componentTypes:
       mysqld:
-        kind: mysql
         metrics: Exporter
       haproxy:
-        kind: haproxy
         metrics: Native
 ---
 apiVersion: core.openeverest.io/v1alpha1

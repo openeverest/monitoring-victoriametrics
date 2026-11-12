@@ -27,16 +27,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	monitoringv1alpha1 "github.com/openeverest/openeverest/v2/api/monitoring/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/monitoring"
 )
 
 // bindingReconciler turns one binding into VMPodScrapes.
 type bindingReconciler struct {
-	client    client.Client
-	cc        monitoring.ClassController
-	className string
+	client client.Client
+	cc     monitoring.ClassController
 }
 
 func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -44,8 +42,11 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.client.Get(ctx, req.NamespacedName, b); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !b.DeletionTimestamp.IsZero() || !r.serves(b) {
+	if !b.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if serves, err := r.serves(ctx, b); err != nil || !serves {
+		return ctrl.Result{}, err
 	}
 	if !monitoring.IsAccepted(b) {
 		return ctrl.Result{}, r.reportNotAccepted(ctx, b)
@@ -75,7 +76,7 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonEndpointNotServing,
 			fmt.Sprintf("Instance %s publishes no metrics endpoints", in.Name))
 	}
-	scrapes, err := vmPodScrapesFor(b, r.className, sources, params)
+	scrapes, err := vmPodScrapesFor(b, bindingClass(b), sources, params)
 	if err != nil {
 		return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonRenderFailed, err.Error())
 	}
@@ -87,11 +88,15 @@ func (r *bindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, r.cc.SetConfigured(ctx, b, monitoringv1alpha1.ReasonConfigured, "VMPodScrapes "+strings.Join(names, ", "))
 }
 
-// serves reports whether b is an ExtensionManaged binding of our class; any
-// other binding has a different Configured writer.
-func (r *bindingReconciler) serves(b *monitoringv1alpha1.MonitoringBinding) bool {
-	return b.Spec.ExecutionMode == corev1alpha1.MonitoringExecutionModeExtensionManaged &&
-		b.Labels[monitoringv1alpha1.BindingClassLabel] == r.className
+// serves reports whether b is an ExtensionManaged binding of a class this
+// controller claims; any other binding has a different Configured writer.
+func (r *bindingReconciler) serves(ctx context.Context, b *monitoringv1alpha1.MonitoringBinding) (bool, error) {
+	return r.cc.OwnsBinding(ctx, b)
+}
+
+// bindingClass is the name of the binding's class.
+func bindingClass(b *monitoringv1alpha1.MonitoringBinding) string {
+	return b.Labels[monitoringv1alpha1.BindingClassLabel]
 }
 
 // applyVMPodScrapes writes the rendered VMPodScrapes, deletes the binding's
@@ -171,7 +176,7 @@ func (r *bindingReconciler) ownedVMPodScrapes(ctx context.Context, b *monitoring
 	list.SetKind(vmPodScrapeKind + "List")
 	err := r.client.List(ctx, list, client.InNamespace(b.Namespace), client.MatchingLabels{
 		monitoringv1alpha1.BindingInstanceLabel: b.Spec.InstanceRef.Name,
-		monitoringv1alpha1.BindingClassLabel:    r.className,
+		monitoringv1alpha1.BindingClassLabel:    bindingClass(b),
 	})
 	if meta.IsNoMatchError(err) {
 		return nil, nil

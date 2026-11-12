@@ -39,8 +39,8 @@ import (
 func TestClassReconcilerClaimsOurClass(t *testing.T) {
 	t.Parallel()
 
-	otherClass := testClass()
-	otherClass.Name = "victoriametrics-eu"
+	secondClass := testClass()
+	secondClass.Name = "victoriametrics-eu"
 	errRejected := errors.New("status apply rejected")
 	tests := []struct {
 		name     string
@@ -52,12 +52,19 @@ func TestClassReconcilerClaimsOurClass(t *testing.T) {
 			name:  "class this controller serves",
 			class: testClass(),
 			want: &metav1.Condition{
-				Status: metav1.ConditionTrue, Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + FieldOwner, ObservedGeneration: 1,
+				Status: metav1.ConditionTrue, Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + testControllerName, ObservedGeneration: 1,
 			},
 		},
 		{
-			name:  "another class",
-			class: otherClass,
+			name:  "a second class naming this controller",
+			class: secondClass,
+			want: &metav1.Condition{
+				Status: metav1.ConditionTrue, Reason: monitoringv1alpha1.ReasonAccepted, Message: "claimed by " + testControllerName, ObservedGeneration: 1,
+			},
+		},
+		{
+			name:  "a class of another controller",
+			class: otherControllerClass(),
 		},
 		{
 			name:     "rejected claim is returned for a retry",
@@ -78,7 +85,7 @@ func TestClassReconcilerClaimsOurClass(t *testing.T) {
 				}
 			}
 			c := newFakeClient(t, funcs, tt.class)
-			r := &classReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}}
+			r := &classReconciler{client: c, cc: testController(c)}
 
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: tt.class.Name}})
 			require.ErrorIs(t, err, tt.applyErr)
@@ -140,7 +147,12 @@ func TestDestinationReconcilerReportsReady(t *testing.T) {
 			},
 		},
 		{
-			name:       "destination of another class",
+			name:       "destination of a class of another controller",
+			className:  "victoriametrics-other",
+			parameters: `{"vmPodScrapeLabels":{"vmagent":"main"}}`,
+		},
+		{
+			name:       "destination of a class that does not exist",
 			className:  "prometheus",
 			parameters: `{"vmPodScrapeLabels":{"vmagent":"main"}}`,
 		},
@@ -157,8 +169,8 @@ func TestDestinationReconcilerReportsReady(t *testing.T) {
 					Reason: string(monitoringv1alpha1.ReasonReady), Message: "VMPodScrapes are labelled vmagent=main", LastTransitionTime: metav1.Now(),
 				}}
 			}
-			c := newFakeClient(t, nil, testClass(), dst)
-			r := &destinationReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}}
+			c := newFakeClient(t, nil, testClass(), otherControllerClass(), dst)
+			r := &destinationReconciler{client: c, cc: testController(c)}
 
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Namespace: testNamespace, Name: "vm-prod"}})
 			require.NoError(t, err)
@@ -243,13 +255,14 @@ func TestBindingsForInstanceAndDestination(t *testing.T) {
 	}
 	extension, provider := corev1alpha1.MonitoringExecutionModeExtensionManaged, corev1alpha1.MonitoringExecutionModeProviderManaged
 	c := newFakeClient(t, nil,
+		testClass(),
 		binding("orders-vm", "orders", "victoriametrics", extension, "orders-uid"),
 		binding("orders-prom", "orders", "prometheus", extension, "orders-uid"),
 		binding("orders-pmm", "orders", "victoriametrics", provider, "orders-uid"),
 		binding("orders-old-vm", "orders", "victoriametrics", extension, "deleted-orders-uid"),
 		binding("billing-vm", "billing", "victoriametrics", extension, "billing-uid"),
 	)
-	r := &bindingReconciler{client: c, cc: monitoring.ClassController{Client: c, FieldOwner: FieldOwner, ClassName: "victoriametrics"}, className: "victoriametrics"}
+	r := &bindingReconciler{client: c, cc: testController(c)}
 	in := testInstance()
 	in.UID = "orders-uid"
 
@@ -260,4 +273,31 @@ func TestBindingsForInstanceAndDestination(t *testing.T) {
 		"only ExtensionManaged bindings of our class that the Instance controls")
 	assert.ElementsMatch(t, []reconcile.Request{request("billing-vm"), request("orders-old-vm"), request("orders-vm")},
 		r.bindingsForDestination(t.Context(), testDestination("")), "only ExtensionManaged bindings of our class")
+}
+
+func TestDestinationWatchEnqueuesDestinationsOfServedClasses(t *testing.T) {
+	t.Parallel()
+	destination := func(name, class string) client.Object {
+		dst := testDestination("")
+		dst.Name = name
+		dst.Spec.ClassRef.Name = class
+		return dst
+	}
+	c := newFakeClient(t, nil,
+		testClass(), otherControllerClass(),
+		destination("vm-prod", "victoriametrics"),
+		destination("vm-staging", "victoriametrics"),
+		destination("other", "victoriametrics-other"),
+	)
+	r := &destinationReconciler{client: c, cc: testController(c)}
+	names := func(reqs []reconcile.Request) []string {
+		out := make([]string, 0, len(reqs))
+		for _, req := range reqs {
+			out = append(out, req.Name)
+		}
+		return out
+	}
+
+	assert.ElementsMatch(t, []string{"vm-prod", "vm-staging"}, names(r.destinationsOfClass(t.Context(), testClass())))
+	assert.Empty(t, r.destinationsOfClass(t.Context(), otherControllerClass()))
 }

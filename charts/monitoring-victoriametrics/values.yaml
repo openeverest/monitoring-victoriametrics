@@ -32,13 +32,16 @@ rbac:
   # -- Specifies whether RBAC resources should be created
   create: true
 
-# The MonitoringClass this extension claims. The class is cluster-scoped and
-# installed by this chart; destinations reference it by name.
+# The MonitoringClass this chart installs. The class is cluster-scoped;
+# destinations reference it by name. The controller claims every class whose
+# controllerName is class.controllerName (--controller-name).
 class:
   # -- Install the MonitoringClass
   create: true
-  # -- Name of the MonitoringClass; the controller claims and serves only this class
+  # -- Name of the MonitoringClass, referenced by destinations
   name: victoriametrics
+  # -- controllerName of the MonitoringClass and the controller's --controller-name
+  controllerName: openeverest.io/monitoring-victoriametrics
   # -- Display name shown in the UI
   displayName: VictoriaMetrics
 

@@ -4,6 +4,7 @@ kind: MonitoringClass
 metadata:
   name: victoriametrics
 spec:
+  controllerName: openeverest.io/monitoring-victoriametrics
   extensionManaged:
     requires:
       metrics: true
