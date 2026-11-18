@@ -102,7 +102,7 @@ The chart is published as an OCI artifact to GitHub Container Registry:
 ```bash
 helm install monitoring-victoriametrics \
   oci://ghcr.io/openeverest/charts/monitoring-victoriametrics \
-  -n openeverest-system
+  -n everest-system
 ```
 
 Check that the class is claimed:
@@ -115,8 +115,8 @@ Upgrade and uninstall:
 
 ```bash
 helm upgrade monitoring-victoriametrics \
-  oci://ghcr.io/openeverest/charts/monitoring-victoriametrics -n openeverest-system
-helm uninstall monitoring-victoriametrics -n openeverest-system
+  oci://ghcr.io/openeverest/charts/monitoring-victoriametrics -n everest-system
+helm uninstall monitoring-victoriametrics -n everest-system
 ```
 
 Uninstalling removes the class and the controller. Existing `VMPodScrape`s stay until their
@@ -248,7 +248,7 @@ namespace, and the VictoriaMetrics Operator logs for rejected VMPodScrapes.
 Controller logs:
 
 ```bash
-kubectl -n openeverest-system logs deploy/monitoring-victoriametrics -f
+kubectl -n everest-system logs deploy/monitoring-victoriametrics -f
 ```
 
 ## Development

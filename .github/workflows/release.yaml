@@ -96,7 +96,7 @@ jobs:
           \`\`\`bash
           helm install monitoring-victoriametrics \\
             oci://${REGISTRY}/${{ github.repository_owner }}/charts/monitoring-victoriametrics \\
-            --version ${VERSION} -n openeverest-system
+            --version ${VERSION} -n everest-system
           \`\`\`
           EOF
 

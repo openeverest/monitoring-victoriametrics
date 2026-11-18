@@ -18,7 +18,7 @@ spec:
     - script:
         content: kubectl get monitoringclass,provider -o yaml
     - podLogs:
-        namespace: openeverest-system
+        namespace: everest-system
         selector: app.kubernetes.io/name=monitoring-victoriametrics
         tail: 100
   steps:
