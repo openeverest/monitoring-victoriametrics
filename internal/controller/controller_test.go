@@ -33,7 +33,7 @@ import (
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	monitoringv1alpha1 "github.com/openeverest/openeverest/v2/api/monitoring/v1alpha1"
-	"github.com/openeverest/openeverest/v2/provider-runtime/monitoring"
+	"github.com/openeverest/openeverest/v2/contract/monitoring"
 )
 
 func TestClassReconcilerClaimsOurClass(t *testing.T) {
