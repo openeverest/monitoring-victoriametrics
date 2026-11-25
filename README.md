@@ -32,6 +32,10 @@ per database component, which the VMAgent you already run picks up through its
 |---|---|---|
 | `0.1.x` | `2.0.0-dev.5` | `v0.75.x` |
 
+The chart and its `MonitoringClass` carry the annotation `openeverest.io/contract-version`, the
+contract version of the OpenEverest the controller is built against. It names the oldest
+OpenEverest the build works with.
+
 ## How it fits
 
 ```mermaid
@@ -132,6 +136,7 @@ Instance entries are removed.
 | `image.tag` | chart `appVersion` | Controller image tag |
 | `leaderElection.enabled` | `true` | Required for `replicaCount` above 1 |
 | `logLevel` | `info` | `debug`, `info` or `error` |
+| `compatibility.acknowledge.coreVersion` | `""` | OpenEverest release on which to run this build although it does not support it, such as `2.0.0` |
 
 All values are in [values.yaml](charts/monitoring-victoriametrics/values.yaml).
 
@@ -261,6 +266,8 @@ make build        # bin/controller
 make test-unit
 make lint
 make helm-lint
+make generate     # stamp the chart with the OpenEverest contract version
+make verify       # fail on stale generated files or a missing stamp
 make run          # run the controller against the current kubeconfig
 ```
 

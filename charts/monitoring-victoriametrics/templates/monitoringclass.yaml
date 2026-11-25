@@ -5,6 +5,8 @@ metadata:
   name: {{ .Values.class.name }}
   labels:
     {{- include "monitoring-victoriametrics.labels" . | nindent 4 }}
+  annotations:
+    {{- include "openeverest.contract.annotations" . | nindent 4 }}
 spec:
   controllerName: {{ .Values.class.controllerName }}
   displayName: {{ .Values.class.displayName }}

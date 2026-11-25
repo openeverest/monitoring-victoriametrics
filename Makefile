@@ -42,6 +42,24 @@ tidy-check: ## Verify go.mod and go.sum are tidy.
 	go mod tidy
 	git diff --exit-code -- go.mod go.sum
 
+# Files make generate writes. classgen writes the stamp into Chart.yaml and
+# the helper template the MonitoringClass includes to carry it.
+GENERATED_FILES = $(CHART_DIR)/Chart.yaml $(CHART_DIR)/templates/_openeverest_contract.tpl
+
+.PHONY: generate
+generate: ## Stamp the chart with the OpenEverest contract version of the core in go.mod.
+	go tool classgen stamp --chart-dir $(CHART_DIR)
+
+.PHONY: verify
+verify: generate ## Fail when generated files are stale or the chart's objects lack the stamp.
+	@if [ -n "$$(git status --porcelain -- $(GENERATED_FILES))" ]; then \
+		echo "Generated files are out of date: run 'make generate' and commit the result."; \
+		git status --short -- $(GENERATED_FILES); \
+		git --no-pager diff -- $(GENERATED_FILES); \
+		exit 1; \
+	fi
+	go tool classgen verify --chart-dir $(CHART_DIR)
+
 .PHONY: run
 run: ## Run the controller against the current kubeconfig.
 	go run ./cmd/controller

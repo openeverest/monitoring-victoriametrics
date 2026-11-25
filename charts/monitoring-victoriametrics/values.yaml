@@ -45,6 +45,12 @@ class:
   # -- Display name shown in the UI
   displayName: VictoriaMetrics
 
+compatibility:
+  acknowledge:
+    # -- OpenEverest release on which to run this build although it does not
+    # support it, such as 2.0.0. Empty: do not.
+    coreVersion: ""
+
 # -- Annotations to add to the controller pods
 podAnnotations: {}
 # -- Labels to add to the controller pods
